@@ -1,0 +1,12 @@
+{
+  "name": "orderguard-attacker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "node src/demo.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "axios": "^1.7.0"
+  }
+}
