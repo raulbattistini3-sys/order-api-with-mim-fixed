@@ -15,7 +15,7 @@ migrate((app) => {
       { name: "customer", type: "text", required: true, max: 100 },
       { name: "item", type: "text", required: true, max: 200 },
       { name: "quantity", type: "number", required: true, onlyInt: true, min: 1 },
-      // Empty for orders created through the unsafe route.
+      // Empty for orders that didn't come through the gateway.
       { name: "idempotency_key", type: "text", max: 255 },
       { name: "created", type: "autodate", onCreate: true, onUpdate: false },
     ],

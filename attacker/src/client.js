@@ -5,6 +5,27 @@ import axios from "axios";
 import { randomUUID } from "node:crypto";
 import { sign } from "./signing.js";
 
+/**
+ * Request config with the retry count the response interceptor keeps on it.
+ *
+ * @typedef {import("axios").InternalAxiosRequestConfig & { __retries?: number }} RetryConfig
+ */
+
+/**
+ * Creates the signing client. Every non-GET request is serialized, given an
+ * `Idempotency-Key` (a new UUID unless the caller set one), timestamped and
+ * signed. A `409` is retried with the same key.
+ *
+ * @param {object} options
+ * @param {string} options.baseURL Target origin, with no path prefix.
+ * @param {string} options.secret Shared secret used to sign requests.
+ * @param {number} [options.maxRetries=5] How many `409` responses to retry.
+ * @param {(config: import("axios").InternalAxiosRequestConfig) => import("axios").InternalAxiosRequestConfig} [options.tap]
+ *   Interceptor that sees each request after signing. The demo's man in the
+ *   middle is installed here.
+ * @returns {import("axios").AxiosInstance} The configured client. It never
+ *   rejects on HTTP status, so callers must check `res.status`.
+ */
 export function createClient({ baseURL, secret, maxRetries = 5, tap }) {
   const client = axios.create({
     baseURL,
@@ -26,7 +47,7 @@ export function createClient({ baseURL, secret, maxRetries = 5, tap }) {
     if (typeof config.data !== "string") config.data = JSON.stringify(config.data ?? {});
     config.headers.set("Content-Type", "application/json");
 
-    const key = config.headers.get("Idempotency-Key") ?? randomUUID();
+    const key = /** @type {string} */ (config.headers.get("Idempotency-Key") ?? randomUUID());
     const ts = String(Date.now());
     const { pathname, search } = new URL(config.url, "http://x"); // baseURL must have no path prefix
     const uri = pathname + search;
@@ -39,7 +60,7 @@ export function createClient({ baseURL, secret, maxRetries = 5, tap }) {
   // 409 = "same key still in flight". Retry with the same key (the request
   // interceptor reuses it and re-signs with a fresh timestamp).
   client.interceptors.response.use(async (res) => {
-    const cfg = res.config;
+    const cfg = /** @type {RetryConfig} */ (res.config);
     cfg.__retries = cfg.__retries ?? 0;
     if (res.status !== 409 || cfg.__retries >= maxRetries) return res;
     cfg.__retries++;

@@ -3,8 +3,30 @@
 // the wire. It lets the original through and launches every attack alongside it.
 import { runAttack } from "./attacks.js";
 
+/**
+ * Everything one attack produced.
+ *
+ * @typedef {object} AttackResult
+ * @property {import("./attacks.js").Attack} attack The attack that ran.
+ * @property {import("./attacks.js").Shot[]} shots One outcome per copy sent.
+ */
+
+/**
+ * Creates a man in the middle. Pass `tap` to `createClient` to install it.
+ * Each distinct `Idempotency-Key` is attacked once, so `409` retries don't
+ * launch the attacks again.
+ *
+ * @param {object} options
+ * @param {string} options.target Origin the attacks are sent to.
+ * @param {import("./attacks.js").Attack[]} options.attacks Attacks to launch.
+ * @returns {{
+ *   tap: (config: import("axios").InternalAxiosRequestConfig) => import("axios").InternalAxiosRequestConfig,
+ *   done: () => Promise<AttackResult[]>,
+ * }} `tap` is the interceptor; `done` resolves when all attacks have finished.
+ */
 export function createMitm({ target, attacks }) {
   const seen = new Set();
+  /** @type {Promise<AttackResult>[]} */
   const running = [];
 
   const tap = (config) => {
@@ -23,7 +45,14 @@ export function createMitm({ target, attacks }) {
   return { tap, done: () => Promise.all(running) };
 }
 
+/**
+ * Groups shots by outcome for display.
+ *
+ * @param {import("./attacks.js").Shot[]} shots
+ * @returns {string} A summary such as `2× 409, 8× 201 (replayed)`.
+ */
 export function summarize(shots) {
+  /** @type {Record<string, number>} */
   const counts = {};
   for (const s of shots) {
     const label = s.status + (s.replayed ? " (replayed)" : "");

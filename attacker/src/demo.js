@@ -17,6 +17,21 @@ const REPLAY_DELAY_MS = Number(process.env.REPLAY_DELAY_MS ?? 6000);
 
 const api = axios.create({ baseURL: API_URL, validateStatus: () => true });
 
+/**
+ * Places one order with a man in the middle attached, waits for every attack
+ * to finish, and counts the orders that landed for that customer.
+ *
+ * @param {string} label Scenario name, also used in the customer name.
+ * @param {string} target Origin the victim and the attacks send requests to.
+ * @returns {Promise<{
+ *   label: string,
+ *   target: string,
+ *   victim: number,
+ *   results: import("./mitm.js").AttackResult[],
+ *   orders: number,
+ *   quantities: number[],
+ * }>} `victim` is the status the victim saw; `orders` is the real order count.
+ */
 async function scenario(label, target) {
   const customer = `demo-${label}-${Date.now()}`;
   const mitm = createMitm({ target, attacks: buildAttacks({ replayDelayMs: REPLAY_DELAY_MS }) });
