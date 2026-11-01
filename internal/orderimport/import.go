@@ -23,13 +23,18 @@ type Summary struct {
 
 // Importer writes parsed rows as orders, with a bounded number of workers.
 type Importer struct {
-	repo    order.Repository
+	repo    Writer
 	workers int
+}
+
+// Writer is the part of the order store an import needs.
+type Writer interface {
+	Create(ctx context.Context, o order.Order) (order.Order, error)
 }
 
 // NewImporter returns an Importer. workers caps how many rows are written at
 // once; the gateway's rate limit guards the front door, this guards the store.
-func NewImporter(repo order.Repository, workers int) *Importer {
+func NewImporter(repo Writer, workers int) *Importer {
 	if workers < 1 {
 		workers = 1
 	}

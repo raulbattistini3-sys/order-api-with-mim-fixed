@@ -169,7 +169,8 @@ Served by the gateway on `:8081`. The API on `:8080` has the same routes with no
 | `POST /auth/forgot-password`, `/auth/reset-password` | Password reset. The first always returns `204`, so it can't reveal which emails exist |
 | `GET /auth/cnpj/{cnpj}` | Looks up a company. Accepts numeric and alphanumeric CNPJs |
 | `GET /me` | The session's user and company |
-| `GET`, `POST /me/orders` | The session's orders. `POST` also needs `Idempotency-Key`. Body: `{"item","quantity"}` |
+| `GET`, `POST /me/orders` | The session's orders. `GET` takes `limit` (1–200, default 100) and `cursor`, and returns `{orders, next_cursor}`, newest first. `POST` also needs `Idempotency-Key`. Body: `{"item","quantity"}` |
+| `GET /me/orders/summary` | `{orders, units, items, top_items}`, summed in the database |
 | `GET`, `POST /me/todos`, `PATCH`, `DELETE /me/todos/{id}` | The session's to-dos |
 | `GET /healthz` | Returns `204` |
 

@@ -118,6 +118,19 @@ type Page[T any] struct {
 	TotalItems int `json:"totalItems"`
 }
 
+// Scroll is List without the total, which PocketBase would have to count on
+// every page.
+func Scroll[T any](ctx context.Context, c *Client, collection, filter, sort string, perPage int) ([]T, error) {
+	q := url.Values{}
+	q.Set("filter", filter)
+	q.Set("sort", sort)
+	q.Set("perPage", strconv.Itoa(perPage))
+	q.Set("skipTotal", "1")
+	var page Page[T]
+	err := c.do(ctx, http.MethodGet, recordsPath(collection)+"?"+q.Encode(), nil, &page)
+	return page.Items, err
+}
+
 // List runs a filtered list query. filter uses PocketBase filter syntax; build
 // string literals with Quote.
 func List[T any](ctx context.Context, c *Client, collection, filter, sort string, perPage int) (Page[T], error) {

@@ -36,9 +36,35 @@ func (o Order) Validate() error {
 	return nil
 }
 
+// Cursor marks a position in a customer's orders, newest first. Created alone
+// won't do: an import writes many orders in the same millisecond.
+type Cursor struct {
+	Created string
+	ID      string
+}
+
+// ItemTotal sums the orders of one item.
+type ItemTotal struct {
+	Item   string `json:"item"`
+	Units  int    `json:"units"`
+	Orders int    `json:"orders"`
+}
+
+// Totals aggregates a customer's orders.
+type Totals struct {
+	Orders   int         `json:"orders"`
+	Units    int         `json:"units"`
+	Items    int         `json:"items"`
+	TopItems []ItemTotal `json:"top_items"`
+}
+
 // Repository stores orders. Create returns ErrDuplicate when IdempotencyKey is
 // set and already taken.
 type Repository interface {
 	Create(ctx context.Context, o Order) (Order, error)
 	ListByCustomer(ctx context.Context, customer string, limit int) ([]Order, int, error)
+	// ListAfter returns up to limit orders older than after, or the newest when
+	// after is nil.
+	ListAfter(ctx context.Context, customer string, after *Cursor, limit int) ([]Order, error)
+	Totals(ctx context.Context, customer string) (Totals, error)
 }

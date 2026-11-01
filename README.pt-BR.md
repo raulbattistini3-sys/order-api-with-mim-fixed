@@ -169,7 +169,8 @@ Servida pelo gateway em `:8081`. A API em `:8080` tem as mesmas rotas, sem nenhu
 | `POST /auth/forgot-password`, `/auth/reset-password` | Redefinição de senha. A primeira sempre retorna `204`, para não revelar quais e-mails existem |
 | `GET /auth/cnpj/{cnpj}` | Consulta uma empresa. Aceita CNPJ numérico e alfanumérico |
 | `GET /me` | O usuário e a empresa da sessão |
-| `GET`, `POST /me/orders` | Os pedidos da sessão. `POST` também exige `Idempotency-Key`. Corpo: `{"item","quantity"}` |
+| `GET`, `POST /me/orders` | Os pedidos da sessão. `GET` aceita `limit` (1–200, padrão 100) e `cursor`, e retorna `{orders, next_cursor}`, do mais novo para o mais antigo. `POST` também exige `Idempotency-Key`. Corpo: `{"item","quantity"}` |
+| `GET /me/orders/summary` | `{orders, units, items, top_items}`, somados no banco |
 | `GET`, `POST /me/todos`, `PATCH`, `DELETE /me/todos/{id}` | As tarefas da sessão |
 | `GET /healthz` | Retorna `204` |
 
