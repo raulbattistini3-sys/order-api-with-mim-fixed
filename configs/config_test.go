@@ -3,6 +3,7 @@ package configs
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,21 @@ max_import_mb = 8
 	}
 	if cfg.Limits.BodyBytes() != 2<<20 || cfg.Limits.ImportBytes() != 16<<20 {
 		t.Fatalf("limits = %+v", cfg.Limits)
+	}
+}
+
+// Both files must parse, and must say what the defaults say, so the documented
+// values can't drift from the code.
+func TestShippedFilesMatchDefaults(t *testing.T) {
+	for _, path := range []string{"../config.toml", "../config.toml.example"} {
+		t.Setenv("CONFIG_FILE", path)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if !reflect.DeepEqual(cfg, defaults()) {
+			t.Fatalf("%s:\n got %+v\nwant %+v", path, cfg, defaults())
+		}
 	}
 }
 
