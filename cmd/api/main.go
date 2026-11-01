@@ -19,6 +19,7 @@ import (
 	"github.com/you/orderguard/internal/order"
 	"github.com/you/orderguard/internal/orderimport"
 	"github.com/you/orderguard/internal/pocketbase"
+	"github.com/you/orderguard/internal/search"
 	"github.com/you/orderguard/internal/server"
 	"github.com/you/orderguard/internal/todo"
 )
@@ -44,9 +45,19 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Search is optional, and the indexer runs apart from writes, so an outage of
+	// Meilisearch can't take orders down with it.
+	var searcher order.Searcher = order.NoSearch{}
+	var indexer *search.Indexer
+	if cfg.Search.URL != "" {
+		client := search.New(cfg.Search.URL, cfg.Search.APIKey, cfg.Search.Index)
+		searcher = client
+		indexer = search.NewIndexer(client, orders, log)
+	}
+
 	handler := api.New(api.Deps{
 		Accounts:       auth.NewService(pocketbase.NewAccounts(pb), pocketbase.NewCompanyRepository(pb), company.NewBrasilAPI(cfg.API.CNPJAPIURL), log),
-		Orders:         order.NewService(orders),
+		Orders:         order.NewService(orders, searcher),
 		Imports:        orderimport.NewService(importer, queue, cfg.API.ImportSyncRows),
 		Todos:          todo.NewService(pocketbase.NewTodoRepository(pb)),
 		MaxImportBytes: cfg.Limits.ImportBytes(),
@@ -60,6 +71,9 @@ func run(log *slog.Logger) error {
 		defer close(drained)
 		queue.Run(ctx)
 	}()
+	if indexer != nil {
+		go indexer.Run(ctx)
+	}
 
 	err = server.Run(":"+cfg.API.Port, handler, log)
 	stop()

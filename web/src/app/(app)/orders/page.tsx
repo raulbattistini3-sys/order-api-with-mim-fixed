@@ -4,6 +4,7 @@ import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-
 import { useCallback, useRef, useState, type FormEvent } from "react";
 import { Alert, Button, Card, Field } from "@/components/ui";
 import { ImportCard } from "./import-card";
+import { OrderSearch } from "./order-search";
 import { OrderSummary } from "./order-summary";
 import { OrdersTable } from "./orders-table";
 import { api, ApiError, type ApiResult } from "@/lib/api";
@@ -98,7 +99,9 @@ export default function OrdersPage() {
 
       <Card title="Seus pedidos">
         <OrderSummary />
-        <OrdersTable />
+        <OrderSearch>
+          <OrdersTable />
+        </OrderSearch>
       </Card>
     </div>
   );

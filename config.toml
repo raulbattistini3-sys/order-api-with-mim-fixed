@@ -20,6 +20,10 @@ signature_max_age = "30s"
 [pocketbase]
 url = "http://localhost:8090"
 
+[search]
+url = "" # Meilisearch, such as http://localhost:7700; empty turns search off
+index = "orders"
+
 [limits]
 # Every route. The gateway reads the body before it can check the signature,
 # so anyone can make it buffer this much.

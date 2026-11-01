@@ -10,6 +10,7 @@
 #                   web app must share it
 #   PB_EMAIL        PocketBase superuser
 #   PB_PASSWORD     PocketBase superuser
+#   MEILI_API_KEY   Meilisearch master key, required when search.url is set
 
 [api]
 # Port the API listens on. Env: PORT
@@ -48,6 +49,14 @@ signature_max_age = "30s"
 [pocketbase]
 # Env: PB_URL
 url = "http://localhost:8090"
+
+[search]
+# Meilisearch, such as http://localhost:7700. Empty turns search off, and
+# GET /me/orders/search answers 503. Env: MEILI_URL
+url = ""
+# Created on first run, then filled from the existing orders.
+# Env: MEILI_INDEX
+index = "orders"
 
 [limits]
 # Largest request body on every route, in MiB. The gateway reads the body before

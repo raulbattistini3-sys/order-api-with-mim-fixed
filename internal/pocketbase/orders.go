@@ -55,6 +55,17 @@ func (r *OrderRepository) ListAfter(ctx context.Context, customer string, after 
 	return Scroll[order.Order](ctx, r.pb, ordersCollection, filter, "-created,-id", limit)
 }
 
+// ListSince returns up to limit orders newer than after, across every customer,
+// oldest first.
+func (r *OrderRepository) ListSince(ctx context.Context, after *order.Cursor, limit int) ([]order.Order, error) {
+	filter := ""
+	if after != nil {
+		created, id := Quote(after.Created), Quote(after.ID)
+		filter = "created>" + created + " || (created=" + created + " && id>" + id + ")"
+	}
+	return Scroll[order.Order](ctx, r.pb, ordersCollection, filter, "created,id", limit)
+}
+
 // Totals reads the aggregate views. A customer with no orders has no rows there.
 func (r *OrderRepository) Totals(ctx context.Context, customer string) (order.Totals, error) {
 	var row struct {

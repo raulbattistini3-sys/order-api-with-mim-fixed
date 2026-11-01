@@ -12,6 +12,9 @@ import (
 const (
 	defaultPage = 100
 	maxPage     = 200
+	// defaultMatches and maxMatches size a search's results.
+	defaultMatches = 20
+	maxMatches     = 100
 )
 
 var (
@@ -19,7 +22,24 @@ var (
 	ErrInvalidLimit = fmt.Errorf("limit must be from 1 to %d", maxPage)
 	// ErrInvalidCursor means a cursor wasn't one this service issued.
 	ErrInvalidCursor = errors.New("invalid cursor")
+	// ErrInvalidSearch means a search has no text or an out-of-range limit.
+	ErrInvalidSearch = fmt.Errorf("q (1-200) is required, and limit must be from 1 to %d", maxMatches)
+	// ErrSearchDisabled means no search engine is configured.
+	ErrSearchDisabled = errors.New("search is not configured")
 )
+
+// Searcher finds a customer's orders by text.
+type Searcher interface {
+	Search(ctx context.Context, customer, q string, limit int) ([]Order, error)
+}
+
+// NoSearch is the Searcher to use when no search engine is configured.
+type NoSearch struct{}
+
+// Search always returns ErrSearchDisabled.
+func (NoSearch) Search(context.Context, string, string, int) ([]Order, error) {
+	return nil, ErrSearchDisabled
+}
 
 // Page is one page of a customer's orders, newest first. NextCursor is empty on
 // the last page.
@@ -34,15 +54,29 @@ type Service interface {
 	Recent(ctx context.Context, customer string) ([]Order, int, error)
 	Page(ctx context.Context, customer string, limit int, cursor string) (Page, error)
 	Totals(ctx context.Context, customer string) (Totals, error)
+	Search(ctx context.Context, customer, q string, limit int) ([]Order, error)
 }
 
 type service struct {
-	repo Repository
+	repo     Repository
+	searcher Searcher
 }
 
-// NewService returns a Service backed by repo.
-func NewService(repo Repository) Service {
-	return &service{repo: repo}
+// NewService returns a Service backed by repo and searcher.
+func NewService(repo Repository, searcher Searcher) Service {
+	return &service{repo: repo, searcher: searcher}
+}
+
+func (s *service) Search(ctx context.Context, customer, q string, limit int) ([]Order, error) {
+	q = strings.TrimSpace(q)
+	if q == "" || len(q) > 200 || limit < 1 || limit > maxMatches {
+		return nil, ErrInvalidSearch
+	}
+	orders, err := s.searcher.Search(ctx, customer, q, limit)
+	if orders == nil {
+		orders = []Order{}
+	}
+	return orders, err
 }
 
 func (s *service) Place(ctx context.Context, o Order) (Order, error) {

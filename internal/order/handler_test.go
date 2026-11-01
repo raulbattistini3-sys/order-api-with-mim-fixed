@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -52,7 +53,7 @@ func (r *memRepo) Totals(_ context.Context, customer string) (Totals, error) {
 
 func newMux(repo Repository) *http.ServeMux {
 	mux := http.NewServeMux()
-	Routes(mux, NewService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	Routes(mux, NewService(repo, stubSearch{}), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return mux
 }
 
@@ -140,6 +141,48 @@ func TestRejectsBadPageParams(t *testing.T) {
 		if rec := get(mux, target, "u1"); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d", target, rec.Code)
 		}
+	}
+}
+
+// stubSearch records nothing and answers with one order naming its customer.
+type stubSearch struct{ err error }
+
+func (s stubSearch) Search(_ context.Context, customer, q string, _ int) ([]Order, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return []Order{{ID: "hit", Customer: customer, Item: q}}, nil
+}
+
+func TestSearch(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tt := range []struct {
+		name     string
+		searcher Searcher
+		target   string
+		want     int
+	}{
+		{"finds", stubSearch{}, "/me/orders/search?q=teclado", http.StatusOK},
+		{"no text", stubSearch{}, "/me/orders/search?q=%20", http.StatusBadRequest},
+		{"limit too high", stubSearch{}, "/me/orders/search?q=a&limit=101", http.StatusBadRequest},
+		{"bad limit", stubSearch{}, "/me/orders/search?q=a&limit=x", http.StatusBadRequest},
+		{"not configured", NoSearch{}, "/me/orders/search?q=a", http.StatusServiceUnavailable},
+		{"engine down", stubSearch{err: errors.New("down")}, "/me/orders/search?q=a", http.StatusBadGateway},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			Routes(mux, NewService(&memRepo{}, tt.searcher), log)
+			if rec := get(mux, tt.target, "u1"); rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d, body %s", rec.Code, tt.want, rec.Body)
+			}
+		})
+	}
+}
+
+func TestSearchUsesTheSessionsCustomer(t *testing.T) {
+	rec := get(newMux(&memRepo{}), "/me/orders/search?q=a&customer=someone-else", "u1")
+	if !strings.Contains(rec.Body.String(), `"customer":"u1"`) {
+		t.Fatalf("body = %s", rec.Body)
 	}
 }
 

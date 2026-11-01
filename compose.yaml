@@ -12,8 +12,18 @@ services:
       - "8090:8090" # admin UI at http://localhost:8090/_/
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/api/health"]
-      interval: 2s
+      interval: 10s
       retries: 15
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.56.0
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_API_KEY:-dev-meilisearch-key-change-me}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    ports:
+      - "127.0.0.1:7700:7700" # for the API when it runs outside Docker
 
   api:
     build: { context: ., args: { CMD: api } }
@@ -22,12 +32,15 @@ services:
       PB_EMAIL: ${PB_ADMIN_EMAIL:-admin@local.test}
       PB_PASSWORD: ${PB_ADMIN_PASSWORD:-change-me-please}
       IMPORT_SPOOL_DIR: /imports
+      MEILI_URL: http://meilisearch:7700
+      MEILI_API_KEY: ${MEILI_API_KEY:-dev-meilisearch-key-change-me}
     volumes:
       - imports:/imports # queued spreadsheets survive a restart
     ports:
       - "8080:8080" # published only so the demo can attack it directly
     depends_on:
       pocketbase: { condition: service_healthy }
+      meilisearch: { condition: service_started }
 
   gateway:
     build: { context: ., args: { CMD: gateway } }
@@ -46,3 +59,4 @@ services:
 volumes:
   pb_data:
   imports:
+  meili_data:

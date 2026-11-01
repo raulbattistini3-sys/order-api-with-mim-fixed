@@ -1,7 +1,7 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 // How close to the last loaded row, in rows, the next page starts loading.
 const LOAD_AHEAD = 30;
@@ -9,7 +9,7 @@ const LOAD_AHEAD = 30;
 type Props<T> = {
   items: T[];
   getKey: (item: T) => string;
-  renderRow: (item: T) => ReactNode;
+  renderRow: (item: T, open: boolean, toggle: () => void) => ReactNode;
   rowHeight?: number;
   height?: number;
   hasMore?: boolean;
@@ -29,9 +29,12 @@ export function VirtualList<T>({
   onEndReached,
 }: Props<T>) {
   const scroller = useRef<HTMLDivElement>(null);
+  // Kept here because rows unmount when they scroll out of view.
+  const [openKey, setOpenKey] = useState<string | null>(null);
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scroller.current,
+    getItemKey: (index) => getKey(items[index]),
     estimateSize: () => rowHeight,
     overscan: 10,
   });
@@ -45,15 +48,20 @@ export function VirtualList<T>({
   return (
     <div ref={scroller} className="overflow-y-auto" style={{ maxHeight: height }}>
       <ul className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-        {rows.map((row) => (
-          <li
-            key={getKey(items[row.index])}
-            className="absolute inset-x-0 top-0 border-b border-border"
-            style={{ height: row.size, transform: `translateY(${row.start}px)` }}
-          >
-            {renderRow(items[row.index])}
-          </li>
-        ))}
+        {rows.map((row) => {
+          const key = getKey(items[row.index]);
+          return (
+            <li
+              key={key}
+              ref={virtualizer.measureElement}
+              data-index={row.index}
+              className="absolute inset-x-0 top-0 border-b border-border"
+              style={{ transform: `translateY(${row.start}px)` }}
+            >
+              {renderRow(items[row.index], openKey === key, () => setOpenKey(openKey === key ? null : key))}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

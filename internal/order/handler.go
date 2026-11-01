@@ -19,6 +19,7 @@ func Routes(mux *http.ServeMux, svc Service, log *slog.Logger) {
 	mux.Handle("POST /me/orders", auth.RequireIdentity(createMine(svc, log)))
 	mux.Handle("GET /me/orders", auth.RequireIdentity(listMine(svc, log)))
 	mux.Handle("GET /me/orders/summary", auth.RequireIdentity(summaryMine(svc, log)))
+	mux.Handle("GET /me/orders/search", auth.RequireIdentity(searchMine(svc, log)))
 }
 
 func create(svc Service, log *slog.Logger) http.HandlerFunc {
@@ -131,6 +132,35 @@ func summaryMine(svc Service, log *slog.Logger) http.HandlerFunc {
 			return
 		}
 		httpjson.Write(w, http.StatusOK, totals)
+	}
+}
+
+// searchMine handles GET /me/orders/search?q=T&limit=N.
+func searchMine(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		limit := defaultMatches
+		if v := r.URL.Query().Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				httpjson.Error(w, http.StatusBadRequest, ErrInvalidSearch.Error())
+				return
+			}
+			limit = n
+		}
+		orders, err := svc.Search(r.Context(), id.UserID, r.URL.Query().Get("q"), limit)
+		switch {
+		case errors.Is(err, ErrInvalidSearch):
+			httpjson.Error(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrSearchDisabled):
+			httpjson.Error(w, http.StatusServiceUnavailable, err.Error())
+		case err != nil:
+			// Orders still work without search, so this isn't a 500.
+			log.Error("search orders", "err", err)
+			httpjson.Error(w, http.StatusBadGateway, "search unavailable")
+		default:
+			httpjson.Write(w, http.StatusOK, map[string]any{"orders": orders})
+		}
 	}
 }
 

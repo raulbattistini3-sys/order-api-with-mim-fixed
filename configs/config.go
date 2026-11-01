@@ -25,6 +25,7 @@ type Config struct {
 	API        API        `toml:"api"`
 	Gateway    Gateway    `toml:"gateway"`
 	PocketBase PocketBase `toml:"pocketbase"`
+	Search     Search     `toml:"search"`
 	Limits     Limits     `toml:"limits"`
 
 	ClientSecret string `toml:"-"`
@@ -57,6 +58,13 @@ type PocketBase struct {
 	Password string `toml:"-"`
 }
 
+// Search configures Meilisearch. An empty URL turns search off.
+type Search struct {
+	URL    string `toml:"url"`
+	Index  string `toml:"index"`
+	APIKey string `toml:"-"`
+}
+
 // Limits caps request bodies, in MiB.
 type Limits struct {
 	MaxBodyMB   int64 `toml:"max_body_mb"`
@@ -74,6 +82,7 @@ func defaults() Config {
 		API:        API{Port: "8080", ImportWorkers: 1, ImportBatchSize: 500, ImportSyncRows: 15_000, ImportSpoolDir: "bin/imports", CNPJAPIURL: "https://brasilapi.com.br"},
 		Gateway:    Gateway{Port: "8081", Upstream: "http://localhost:8080", Rate: 100, Burst: 200, SignatureMaxAge: 30 * time.Second},
 		PocketBase: PocketBase{URL: "http://localhost:8090"},
+		Search:     Search{Index: "orders"},
 		Limits:     Limits{MaxBodyMB: 1, MaxImportMB: 96},
 	}
 }
@@ -106,6 +115,9 @@ func Load() (Config, error) {
 	if cfg.API.ImportBatchSize < 1 || cfg.API.ImportBatchSize > maxImportBatch {
 		return Config{}, fmt.Errorf("import_batch_size must be from 1 to %d", maxImportBatch)
 	}
+	if cfg.Search.URL != "" && cfg.Search.APIKey == "" {
+		return Config{}, errors.New("MEILI_API_KEY is required when search.url is set")
+	}
 	return cfg, nil
 }
 
@@ -129,6 +141,9 @@ func applyEnv(cfg *Config) error {
 	override(&errs, "PB_URL", &cfg.PocketBase.URL, text)
 	override(&errs, "PB_EMAIL", &cfg.PocketBase.Email, text)
 	override(&errs, "PB_PASSWORD", &cfg.PocketBase.Password, text)
+	override(&errs, "MEILI_URL", &cfg.Search.URL, text)
+	override(&errs, "MEILI_INDEX", &cfg.Search.Index, text)
+	override(&errs, "MEILI_API_KEY", &cfg.Search.APIKey, text)
 	override(&errs, "MAX_BODY_MB", &cfg.Limits.MaxBodyMB, megabytes)
 	override(&errs, "MAX_IMPORT_MB", &cfg.Limits.MaxImportMB, megabytes)
 	override(&errs, "CLIENT_SECRET", &cfg.ClientSecret, text)

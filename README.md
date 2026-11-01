@@ -15,23 +15,29 @@ This project reproduces a man-in-the-middle attack that duplicates, replays and 
 
 ## Quick start
 
-You need [Go](https://go.dev/dl/) 1.24+ and [Node.js](https://nodejs.org/) 20+. The same commands work in Git Bash, PowerShell, cmd and sh.
+You need [Go](https://go.dev/dl/) 1.24+, [Node.js](https://nodejs.org/) 20+ and GNU Make. The same commands work in Git Bash, PowerShell, cmd and sh.
 
 ```sh
 git clone https://github.com/raulbattistini3-sys/order-api-with-mim-fixed.git
 cd order-api-with-mim-fixed
-node scripts/run.mjs
+make demo
 ```
 
 That one command starts everything, runs the attacks, prints the results and stops. It exits with `0` only if the gateway let exactly one order through. The first run needs internet access: it downloads the PocketBase version pinned in `pocketbase/Dockerfile` into `bin/` and installs the attacker's dependencies.
 
 | Command | What it does |
 |---|---|
-| `node scripts/run.mjs` | Runs the full demo once |
-| `node scripts/run.mjs --serve` | Keeps the services up until Ctrl+C |
-| `go test ./...` | Runs the Go tests |
-| `go test -tags e2e ./internal/e2e/` | Runs the gateway and API against a real PocketBase. Needs `bin/pocketbase`, which `scripts/run.mjs` fetches |
-| `npm test` (in `attacker/` or `web/`) | Runs the JS tests |
+| `make demo` | Runs the full demo once |
+| `make serve` | Keeps the services up until Ctrl+C |
+| `make serve-search` | Same as `make serve`, with Meilisearch search on |
+| `make web` | Starts the Next.js app |
+| `make test` | Runs the Go tests |
+| `make e2e` | Runs the gateway and API against a real PocketBase. Needs `bin/pocketbase`, which `make demo` fetches |
+| `make web-test` | Runs the web tests |
+| `make web-check` | Typechecks and lints the web app |
+| `npm test` (in `attacker/`) | Runs the attacker's tests |
+
+`make` on its own lists every target.
 
 Service logs go to `bin/logs/`.
 
@@ -43,13 +49,14 @@ Secrets are read from the environment only: `CLIENT_SECRET`, `PB_EMAIL` and `PB_
 
 ### Frontend
 
-With the services up (`--serve`), in a second terminal:
+With the services up (`make serve`), in a second terminal:
 
 ```sh
 cd web
 cp .env.example .env.local
 npm install
-npm run dev
+cd ..
+make web
 ```
 
 Open http://localhost:3000 and create an account. With no SMTP server configured, password reset links are printed to `bin/logs/pocketbase.log`. CNPJ data comes from [BrasilAPI](https://brasilapi.com.br/), so the CNPJs you type are sent to it; set `CNPJ_API_URL` on the API to use another source.
@@ -135,6 +142,12 @@ Files of up to `api.import_sync_rows` rows (default 15,000) finish while you wai
 
 In the app, the orders page has an **Importar planilha** card with a downloadable template.
 
+## Search
+
+Order search runs on a self-hosted [Meilisearch](https://www.meilisearch.com/), and is off until `search.url` is set. An indexer in the API copies orders into it, oldest first, from wherever Meilisearch left off. That covers imports, older orders and anything written during an outage, and a search outage can't fail a write. Results lag writes by a few seconds. The API sets the customer filter from the session.
+
+`make serve-search` downloads the version pinned in `compose.yaml` into `bin/` on first use and runs it on `127.0.0.1:7700`, with no Docker needed. Set `MEILI_API_KEY` to replace the local development key. `docker compose up -d meilisearch` works too.
+
 ## Load test
 
 `node loadtest/run.mjs` stands up an isolated stack and drives it with two generators that sign requests exactly as the client does — one in Go (`cmd/loadgen`), one in Rust (`loadtest/rust`). It fires N logical orders × M duplicates and reports throughput, latency and the status mix against:
@@ -172,6 +185,7 @@ Served by the gateway on `:8081`. The API on `:8080` has the same routes with no
 | `GET /me` | The session's user and company |
 | `GET`, `POST /me/orders` | The session's orders. `GET` takes `limit` (1–200, default 100) and `cursor`, and returns `{orders, next_cursor}`, newest first. `POST` also needs `Idempotency-Key`. Body: `{"item","quantity"}` |
 | `GET /me/orders/summary` | `{orders, units, items, top_items}`, summed in the database |
+| `GET /me/orders/search?q=T` | The session's orders matching `T`, from Meilisearch. Takes `limit` (1–100, default 20). `503` when search isn't configured |
 | `GET`, `POST /me/todos`, `PATCH`, `DELETE /me/todos/{id}` | The session's to-dos |
 | `GET /healthz` | Returns `204` |
 
@@ -191,6 +205,7 @@ internal/auth         accounts, sessions, HTTP handlers
 internal/company      Company, CNPJ validation, registry lookup
 internal/order        Order, Service, Repository, HTTP handlers
 internal/todo         per-user to-dos
+internal/search       Meilisearch client and the order indexer
 internal/gateway      rate limit → signature → idempotency → proxy
 internal/signing      HMAC verification and middleware
 internal/idempotency  Store interface and middleware

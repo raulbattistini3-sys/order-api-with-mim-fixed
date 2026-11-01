@@ -15,23 +15,29 @@ Este projeto reproduz um ataque man-in-the-middle que duplica, reenvia e adulter
 
 ## Como rodar
 
-Você precisa do [Go](https://go.dev/dl/) 1.24+ e do [Node.js](https://nodejs.org/) 20+. Os mesmos comandos funcionam no Git Bash, PowerShell, cmd e sh.
+Você precisa do [Go](https://go.dev/dl/) 1.24+, do [Node.js](https://nodejs.org/) 20+ e do GNU Make. Os mesmos comandos funcionam no Git Bash, PowerShell, cmd e sh.
 
 ```sh
 git clone https://github.com/raulbattistini3-sys/order-api-with-mim-fixed.git
 cd order-api-with-mim-fixed
-node scripts/run.mjs
+make demo
 ```
 
 Esse único comando sobe tudo, executa os ataques, mostra os resultados e encerra. Ele só termina com código `0` se o gateway deixar passar exatamente um pedido. A primeira execução precisa de internet: ela baixa para `bin/` a versão do PocketBase fixada em `pocketbase/Dockerfile` e instala as dependências do atacante.
 
 | Comando | O que faz |
 |---|---|
-| `node scripts/run.mjs` | Executa a demo completa uma vez |
-| `node scripts/run.mjs --serve` | Mantém os serviços no ar até o Ctrl+C |
-| `go test ./...` | Executa os testes em Go |
-| `go test -tags e2e ./internal/e2e/` | Executa o gateway e a API contra um PocketBase real. Precisa de `bin/pocketbase`, baixado pelo `scripts/run.mjs` |
-| `npm test` (em `attacker/` ou `web/`) | Executa os testes em JS |
+| `make demo` | Executa a demo completa uma vez |
+| `make serve` | Mantém os serviços no ar até o Ctrl+C |
+| `make serve-search` | Igual ao `make serve`, com a busca do Meilisearch ligada |
+| `make web` | Inicia o app Next.js |
+| `make test` | Executa os testes em Go |
+| `make e2e` | Executa o gateway e a API contra um PocketBase real. Precisa de `bin/pocketbase`, baixado pelo `make demo` |
+| `make web-test` | Executa os testes do web |
+| `make web-check` | Checa os tipos e o lint do app web |
+| `npm test` (em `attacker/`) | Executa os testes do atacante |
+
+`make` sozinho lista todos os alvos.
 
 Os logs dos serviços ficam em `bin/logs/`.
 
@@ -43,13 +49,14 @@ Os segredos são lidos só do ambiente: `CLIENT_SECRET`, `PB_EMAIL` e `PB_PASSWO
 
 ### Frontend
 
-Com os serviços no ar (`--serve`), em outro terminal:
+Com os serviços no ar (`make serve`), em outro terminal:
 
 ```sh
 cd web
 cp .env.example .env.local
 npm install
-npm run dev
+cd ..
+make web
 ```
 
 Abra http://localhost:3000 e crie uma conta. Sem um servidor SMTP configurado, os links de redefinição de senha aparecem em `bin/logs/pocketbase.log`. Os dados de CNPJ vêm da [BrasilAPI](https://brasilapi.com.br/), então os CNPJs digitados são enviados a ela; defina `CNPJ_API_URL` na API para usar outra fonte.
@@ -135,6 +142,12 @@ Arquivos de até `api.import_sync_rows` linhas (padrão 15.000) terminam enquant
 
 No app, a página de pedidos tem um cartão **Importar planilha** com um modelo para baixar.
 
+## Busca
+
+A busca de pedidos roda num [Meilisearch](https://www.meilisearch.com/) auto-hospedado e fica desligada até `search.url` ser definido. Um indexador na API copia os pedidos para ele, do mais antigo para o mais novo, a partir de onde o Meilisearch parou. Isso cobre importações, pedidos antigos e o que for gravado durante uma queda, e uma queda da busca não derruba nenhuma escrita. Os resultados atrasam alguns segundos em relação às escritas. A API define o filtro de cliente a partir da sessão.
+
+O `make serve-search` baixa para `bin/`, no primeiro uso, a versão fixada em `compose.yaml` e a roda em `127.0.0.1:7700`, sem precisar de Docker. Defina `MEILI_API_KEY` para trocar a chave local de desenvolvimento. `docker compose up -d meilisearch` também funciona.
+
 ## Teste de carga
 
 `node loadtest/run.mjs` sobe um stack isolado e o pressiona com dois geradores que assinam as requisições exatamente como o cliente — um em Go (`cmd/loadgen`), outro em Rust (`loadtest/rust`). Ele dispara N pedidos lógicos × M duplicatas e reporta vazão, latência e a distribuição de status contra:
@@ -172,6 +185,7 @@ Servida pelo gateway em `:8081`. A API em `:8080` tem as mesmas rotas, sem nenhu
 | `GET /me` | O usuário e a empresa da sessão |
 | `GET`, `POST /me/orders` | Os pedidos da sessão. `GET` aceita `limit` (1–200, padrão 100) e `cursor`, e retorna `{orders, next_cursor}`, do mais novo para o mais antigo. `POST` também exige `Idempotency-Key`. Corpo: `{"item","quantity"}` |
 | `GET /me/orders/summary` | `{orders, units, items, top_items}`, somados no banco |
+| `GET /me/orders/search?q=T` | Os pedidos da sessão que correspondem a `T`, vindos do Meilisearch. Aceita `limit` (1–100, padrão 20). `503` quando a busca não está configurada |
 | `GET`, `POST /me/todos`, `PATCH`, `DELETE /me/todos/{id}` | As tarefas da sessão |
 | `GET /healthz` | Retorna `204` |
 
@@ -191,6 +205,7 @@ internal/auth         contas, sessões, handlers HTTP
 internal/company      Company, validação de CNPJ, consulta ao registro
 internal/order        Order, Service, Repository, handlers HTTP
 internal/todo         tarefas por usuário
+internal/search       cliente do Meilisearch e indexador de pedidos
 internal/gateway      limite de taxa → assinatura → idempotência → proxy
 internal/signing      verificação HMAC e middleware
 internal/idempotency  interface Store e middleware

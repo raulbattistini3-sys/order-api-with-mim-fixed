@@ -9,14 +9,34 @@ import type { Order, OrderPage } from "@/lib/types";
 
 const PAGE_SIZE = 100;
 
-function OrderRow(order: Order) {
+export function OrderRow(order: Order, open: boolean, toggle: () => void) {
+  const created = new Date(order.created.replace(" ", "T")).toLocaleString("pt-BR");
   return (
-    <div className="flex h-full items-center justify-between gap-4 text-sm">
-      <span className="truncate">{order.item}</span>
-      <span className="shrink-0 text-muted">
-        {order.quantity} un. · {new Date(order.created.replace(" ", "T")).toLocaleString("pt-BR")}
-      </span>
-    </div>
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={toggle}
+        className="flex min-h-11 w-full items-center justify-between gap-4 text-left text-sm"
+      >
+        <span className="truncate">{order.item}</span>
+        <span className="shrink-0 text-muted">
+          {order.quantity} un. · {created} <span aria-hidden>{open ? "▾" : "▸"}</span>
+        </span>
+      </button>
+      {open && (
+        <dl className="grid gap-x-4 gap-y-1 pb-3 text-sm sm:grid-cols-[8rem_1fr]">
+          <dt className="text-muted">Item</dt>
+          <dd className="break-words">{order.item}</dd>
+          <dt className="text-muted">Quantidade</dt>
+          <dd>{order.quantity}</dd>
+          <dt className="text-muted">Criado em</dt>
+          <dd>{created}</dd>
+          <dt className="text-muted">Pedido</dt>
+          <dd className="break-all">{order.id}</dd>
+        </dl>
+      )}
+    </>
   );
 }
 

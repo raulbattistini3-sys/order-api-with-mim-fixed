@@ -103,8 +103,9 @@ func startPocketBase(t *testing.T) string {
 	return ""
 }
 
-// start assembles the stack the way the two mains do and returns the gateway.
-func start(t *testing.T) *httptest.Server {
+// start assembles the stack the way the two mains do, and returns the gateway
+// and the order store.
+func start(t *testing.T) (*httptest.Server, *pocketbase.OrderRepository) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pb := pocketbase.New(startPocketBase(t), adminEmail, adminPassword)
@@ -121,7 +122,7 @@ func start(t *testing.T) *httptest.Server {
 
 	upstream := httptest.NewServer(api.New(api.Deps{
 		Accounts:       auth.NewService(pocketbase.NewAccounts(pb), pocketbase.NewCompanyRepository(pb), registry{}, log),
-		Orders:         order.NewService(orders),
+		Orders:         order.NewService(orders, order.NoSearch{}),
 		Imports:        orderimport.NewService(importer, queue, syncRows),
 		Todos:          todo.NewService(pocketbase.NewTodoRepository(pb)),
 		MaxImportBytes: 8 << 20,
@@ -140,7 +141,7 @@ func start(t *testing.T) *httptest.Server {
 		Log:         log,
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, orders
 }
 
 type client struct {
@@ -223,7 +224,7 @@ func csv(rows int) []byte {
 }
 
 func TestStack(t *testing.T) {
-	srv := start(t)
+	srv, orders := start(t)
 	ana := register(t, srv, "ana@example.com", "45334465000117")
 	bia := register(t, srv, "bia@example.com", "11222333000181")
 
@@ -325,6 +326,40 @@ func TestStack(t *testing.T) {
 		}
 		if len(seen) != 251 {
 			t.Fatalf("orders = %d", len(seen))
+		}
+	})
+
+	t.Run("the search indexer reads every order once, oldest first", func(t *testing.T) {
+		seen := map[string]bool{}
+		var after *order.Cursor
+		for {
+			batch, err := orders.ListSince(context.Background(), after, 70)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(batch) == 0 {
+				break
+			}
+			for _, o := range batch {
+				if seen[o.ID] {
+					t.Fatalf("saw %s twice", o.ID)
+				}
+				if after != nil && o.Created < after.Created {
+					t.Fatalf("%s came out of order", o.ID)
+				}
+				seen[o.ID] = true
+			}
+			last := batch[len(batch)-1]
+			after = &order.Cursor{Created: last.Created, ID: last.ID}
+		}
+		if len(seen) != 281 { // ana's 251 and bia's 30
+			t.Fatalf("orders = %d", len(seen))
+		}
+	})
+
+	t.Run("search answers 503 until it is configured", func(t *testing.T) {
+		if status := ana.do(http.MethodGet, "/me/orders/search?q=item", "", nil, nil); status != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d", status)
 		}
 	})
 

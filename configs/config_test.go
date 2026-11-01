@@ -92,6 +92,17 @@ func TestRejectsBadConfig(t *testing.T) {
 	}
 }
 
+func TestSearchNeedsItsKey(t *testing.T) {
+	writeConfig(t, "[search]\nurl = \"http://localhost:7700\"\n")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "MEILI_API_KEY") {
+		t.Fatalf("err = %v", err)
+	}
+	t.Setenv("MEILI_API_KEY", "k")
+	if cfg, err := Load(); err != nil || cfg.Search.APIKey != "k" {
+		t.Fatalf("cfg = %+v, err = %v", cfg.Search, err)
+	}
+}
+
 func TestRejectsBadEnv(t *testing.T) {
 	writeConfig(t, "")
 	t.Setenv("MAX_BODY_MB", "1.5")
