@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState, type FormEvent } from "react";
+import { useCallback, useRef, useState, type FormEvent } from "react";
 import { Alert, Button, Card, Field } from "@/components/ui";
 import { ImportCard } from "./import-card";
 import { api, ApiError, type ApiResult } from "@/lib/api";
@@ -54,7 +54,7 @@ export default function OrdersPage() {
     place.mutate({ item, quantity });
   }
 
-  const refreshOrders = () => client.invalidateQueries({ queryKey: ["orders"] });
+  const refreshOrders = useCallback(() => client.invalidateQueries({ queryKey: ["orders"] }), [client]);
 
   return (
     <div className="space-y-6">
