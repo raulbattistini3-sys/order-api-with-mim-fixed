@@ -1,0 +1,18 @@
+[package]
+name = "loadgen"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "loadgen"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls"] }
+hmac = "0.12.1"
+sha2 = "0.10.9"
+hex = "0.4.3"
+
+[profile.release]
+opt-level = 3

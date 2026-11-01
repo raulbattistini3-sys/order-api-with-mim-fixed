@@ -64,11 +64,16 @@ type Client struct {
 
 // New returns a Client. Authentication happens lazily on the first call.
 func New(baseURL, email, password string) *Client {
+	// Reuse connections to PocketBase: the default 2 idle per host would make
+	// an import or a load test open a socket per write and exhaust ports.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = 128
 	return &Client{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		email:    email,
 		password: password,
-		http:     &http.Client{Timeout: 5 * time.Second},
+		http:     &http.Client{Timeout: 10 * time.Second, Transport: transport},
 	}
 }
 
@@ -80,6 +85,26 @@ func (c *Client) Create(ctx context.Context, collection string, in, out any) err
 // Update patches a record by id and decodes the stored record into out.
 func (c *Client) Update(ctx context.Context, collection, id string, in, out any) error {
 	return c.do(ctx, http.MethodPatch, recordsPath(collection)+"/"+url.PathEscape(id), in, out)
+}
+
+// Get reads a record by id into out.
+func (c *Client) Get(ctx context.Context, collection, id string, out any) error {
+	return c.do(ctx, http.MethodGet, recordsPath(collection)+"/"+url.PathEscape(id), nil, out)
+}
+
+// Public sends one request without superuser credentials, using token if it
+// isn't empty. It is for endpoints that act as a user rather than as this
+// service.
+func (c *Client) Public(ctx context.Context, method, path, token string, in, out any) error {
+	var body []byte
+	if in != nil {
+		var err error
+		if body, err = json.Marshal(in); err != nil {
+			return err
+		}
+	}
+	_, err := c.send(ctx, method, path, token, body, out)
+	return err
 }
 
 // Delete removes a record by id.

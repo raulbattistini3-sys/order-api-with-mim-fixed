@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/you/orderguard/internal/auth"
 	"github.com/you/orderguard/internal/httpjson"
 )
 
@@ -25,6 +26,8 @@ func NewHandler(repo Repository, log *slog.Logger) *Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /orders", h.create)
 	mux.HandleFunc("GET /orders", h.list)
+	mux.Handle("POST /me/orders", auth.RequireIdentity(http.HandlerFunc(h.createMine)))
+	mux.Handle("GET /me/orders", auth.RequireIdentity(http.HandlerFunc(h.listMine)))
 }
 
 type createRequest struct {
@@ -35,18 +38,48 @@ type createRequest struct {
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		httpjson.Error(w, http.StatusBadRequest, "invalid JSON body")
+	if !decode(w, r, &req) {
 		return
 	}
-	in := Order{
+	h.place(w, r, Order{
 		Customer:       strings.TrimSpace(req.Customer),
 		Item:           strings.TrimSpace(req.Item),
 		Quantity:       req.Quantity,
 		IdempotencyKey: r.Header.Get(RefHeader),
+	})
+}
+
+// createMine takes the customer from the session, never from the body, so a
+// user can't order in someone else's name.
+func (h *Handler) createMine(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Item     string `json:"item"`
+		Quantity int    `json:"quantity"`
 	}
+	if !decode(w, r, &req) {
+		return
+	}
+	id, _ := auth.IdentityFrom(r.Context())
+	h.place(w, r, Order{
+		Customer:       id.UserID,
+		Company:        id.CompanyID,
+		Item:           strings.TrimSpace(req.Item),
+		Quantity:       req.Quantity,
+		IdempotencyKey: r.Header.Get(RefHeader),
+	})
+}
+
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		httpjson.Error(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) place(w http.ResponseWriter, r *http.Request, in Order) {
 	if err := in.Validate(); err != nil {
 		httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
@@ -71,6 +104,15 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusBadRequest, "customer query parameter required")
 		return
 	}
+	h.respondList(w, r, customer)
+}
+
+func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.IdentityFrom(r.Context())
+	h.respondList(w, r, id.UserID)
+}
+
+func (h *Handler) respondList(w http.ResponseWriter, r *http.Request, customer string) {
 	orders, total, err := h.repo.ListByCustomer(r.Context(), customer, 50)
 	if err != nil {
 		h.log.Error("list orders", "err", err)
