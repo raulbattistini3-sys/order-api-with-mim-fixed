@@ -25,7 +25,7 @@ async function forward(request: NextRequest, { params }: RouteContext<"/api/me/[
   const key = request.headers.get("Idempotency-Key");
   const raw = await request.text();
 
-  const res = await gateway(request.method, `/me/${path.join("/")}`, {
+  const res = await gateway(request.method, `/me/${path.join("/")}${request.nextUrl.search}`, {
     token,
     body: raw ? JSON.parse(raw) : undefined,
     idempotencyKey: key && KEY.test(key) ? key : undefined,

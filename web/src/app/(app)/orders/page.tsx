@@ -1,11 +1,13 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { useCallback, useRef, useState, type FormEvent } from "react";
 import { Alert, Button, Card, Field } from "@/components/ui";
 import { ImportCard } from "./import-card";
+import { OrderSummary } from "./order-summary";
+import { OrdersTable } from "./orders-table";
 import { api, ApiError, type ApiResult } from "@/lib/api";
-import type { Order, OrderList } from "@/lib/types";
+import type { Order, OrderPage } from "@/lib/types";
 
 type Draft = { item: string; quantity: number };
 
@@ -18,10 +20,15 @@ export default function OrdersPage() {
   // the form makes it a different order.
   const attempt = useRef<{ body: string; key: string } | null>(null);
 
-  const orders = useQuery({
-    queryKey: ["orders"],
-    queryFn: async () => (await api<OrderList>("orders")).data,
-  });
+  // New orders land at the top, so drop to the first page before refetching.
+  // Otherwise every progress tick of an import would reload all the loaded pages.
+  const refreshOrders = useCallback(() => {
+    client.setQueryData<InfiniteData<OrderPage, string>>(["orders"], (data) =>
+      data && { pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1) },
+    );
+    client.invalidateQueries({ queryKey: ["orders"] });
+    client.invalidateQueries({ queryKey: ["order-summary"] });
+  }, [client]);
 
   function keyFor(draft: Draft) {
     const body = JSON.stringify(draft);
@@ -44,7 +51,7 @@ export default function OrdersPage() {
       attempt.current = null;
       setItem("");
       setQuantity(1);
-      client.invalidateQueries({ queryKey: ["orders"] });
+      refreshOrders();
     },
   });
 
@@ -53,8 +60,6 @@ export default function OrdersPage() {
     setNotice("");
     place.mutate({ item, quantity });
   }
-
-  const refreshOrders = useCallback(() => client.invalidateQueries({ queryKey: ["orders"] }), [client]);
 
   return (
     <div className="space-y-6">
@@ -91,22 +96,9 @@ export default function OrdersPage() {
 
       <ImportCard onImported={refreshOrders} />
 
-      <Card title={orders.data ? `Seus pedidos (${orders.data.count})` : "Seus pedidos"}>
-        {orders.isPending && <p className="text-sm text-muted">Carregando…</p>}
-        {orders.isError && <Alert>Não foi possível carregar os pedidos.</Alert>}
-        {orders.data?.orders.length === 0 && <p className="text-sm text-muted">Nenhum pedido ainda.</p>}
-        {!!orders.data?.orders.length && (
-          <ul className="divide-y divide-border">
-            {orders.data.orders.map((order) => (
-              <li key={order.id} className="flex items-center justify-between gap-4 py-2.5 text-sm">
-                <span>{order.item}</span>
-                <span className="shrink-0 text-muted">
-                  {order.quantity} un. · {new Date(order.created.replace(" ", "T")).toLocaleString("pt-BR")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Card title="Seus pedidos">
+        <OrderSummary />
+        <OrdersTable />
       </Card>
     </div>
   );
