@@ -36,58 +36,83 @@ func NewImporter(repo order.Repository, workers int) *Importer {
 	return &Importer{repo: repo, workers: workers}
 }
 
-// maxSampledErrors bounds how many per-row failures are returned, so a wholly
-// broken file can't produce a huge response.
-const maxSampledErrors = 50
+const (
+	// maxSampledErrors bounds how many per-row failures are returned, so a
+	// wholly broken file can't produce a huge response.
+	maxSampledErrors = 50
+	// reportEvery is how many finished rows pass between progress reports.
+	reportEvery = 1000
+)
 
 // Import writes rows for one user. batchID makes the idempotency keys
 // deterministic: the same file imported twice writes each order once.
 func (im *Importer) Import(ctx context.Context, userID, companyID, batchID string, rows []Row, skipped []RowError) (Summary, error) {
-	var created, duplicates, failed atomic.Int64
+	return im.stream(ctx, userID, companyID, batchID, rows, skipped, nil)
+}
+
+// stream is Import with progress: every reportEvery rows it offers report the
+// counts so far, with Total meaning rows finished. A busy receiver misses one.
+func (im *Importer) stream(ctx context.Context, userID, companyID, batchID string, rows []Row, skipped []RowError, report chan<- Summary) (Summary, error) {
+	var finished, created, duplicates, failed atomic.Int64
 
 	var mu sync.Mutex
 	sampled := append([]RowError(nil), skipped...)
 
-	// A buffered channel caps in-flight work at im.workers; the WaitGroup waits
-	// for the drain. Simple bounded concurrency, no extra machinery.
-	sem := make(chan struct{}, im.workers)
-	var wg sync.WaitGroup
-
-	for _, row := range rows {
-		if err := ctx.Err(); err != nil {
-			wg.Wait()
-			return Summary{}, err
+	write := func(row Row) {
+		o := order.Order{
+			Customer:       userID,
+			Company:        companyID,
+			Item:           row.Item,
+			Quantity:       row.Quantity,
+			IdempotencyKey: rowKey(batchID, row.Line),
 		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(row Row) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			o := order.Order{
-				Customer:       userID,
-				Company:        companyID,
-				Item:           row.Item,
-				Quantity:       row.Quantity,
-				IdempotencyKey: rowKey(batchID, row.Line),
+		switch _, err := im.repo.Create(ctx, o); {
+		case errors.Is(err, order.ErrDuplicate):
+			duplicates.Add(1)
+		case err != nil:
+			failed.Add(1)
+			mu.Lock()
+			if len(sampled) < maxSampledErrors+len(skipped) {
+				sampled = append(sampled, RowError{Line: row.Line, Message: "could not be saved"})
 			}
-			switch _, err := im.repo.Create(ctx, o); {
-			case errors.Is(err, order.ErrDuplicate):
-				duplicates.Add(1)
-			case err != nil:
-				failed.Add(1)
-				mu.Lock()
-				if len(sampled) < maxSampledErrors+len(skipped) {
-					sampled = append(sampled, RowError{Line: row.Line, Message: "could not be saved"})
-				}
-				mu.Unlock()
+			mu.Unlock()
+		default:
+			created.Add(1)
+		}
+		if n := finished.Add(1); report != nil && n%reportEvery == 0 {
+			select {
+			case report <- Summary{Total: int(n), Created: int(created.Load()), Duplicates: int(duplicates.Load()), Failed: int(failed.Load())}:
 			default:
-				created.Add(1)
 			}
-		}(row)
+		}
 	}
+
+	// Rows are interchangeable, so a fixed pool of workers shares one buffered
+	// channel. The buffer keeps workers busy while the feed below catches up.
+	jobs := make(chan Row, im.workers*2)
+	var wg sync.WaitGroup
+	for range im.workers {
+		wg.Go(func() {
+			for row := range jobs {
+				write(row)
+			}
+		})
+	}
+
+feed:
+	for _, row := range rows {
+		select {
+		case jobs <- row:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(jobs)
 	wg.Wait()
 
+	if err := ctx.Err(); err != nil {
+		return Summary{}, err
+	}
 	return Summary{
 		Total:      len(rows),
 		Created:    int(created.Load()),

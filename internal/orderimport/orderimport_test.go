@@ -3,10 +3,13 @@ package orderimport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 	"github.com/you/orderguard/internal/order"
@@ -135,6 +138,73 @@ func TestImportReportsFailures(t *testing.T) {
 	s, _ := im.Import(context.Background(), "u", "c", "b", rows, bad)
 	if s.Failed != 2 || s.Created != 0 {
 		t.Fatalf("summary = %+v", s)
+	}
+}
+
+// gaugeRepo records the most writes it saw at once.
+type gaugeRepo struct {
+	fakeRepo
+	current, peak atomic.Int64
+}
+
+func (r *gaugeRepo) Create(ctx context.Context, o order.Order) (order.Order, error) {
+	n := r.current.Add(1)
+	defer r.current.Add(-1)
+	for {
+		peak := r.peak.Load()
+		if n <= peak || r.peak.CompareAndSwap(peak, n) {
+			break
+		}
+	}
+	time.Sleep(time.Millisecond)
+	return r.fakeRepo.Create(ctx, o)
+}
+
+func TestImportWritesEveryRowWithinWorkerCap(t *testing.T) {
+	repo := &gaugeRepo{fakeRepo: fakeRepo{keys: map[string]bool{}}}
+	rows := make([]Row, 200)
+	for i := range rows {
+		rows[i] = Row{Item: "A", Quantity: 1, Line: i + 2}
+	}
+	s, err := NewImporter(repo, 4).Import(context.Background(), "u", "c", "b", rows, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Created != 200 || s.Failed != 0 {
+		t.Fatalf("summary = %+v", s)
+	}
+	if peak := repo.peak.Load(); peak < 2 || peak > 4 {
+		t.Fatalf("peak concurrent writes = %d, want 2 to 4", peak)
+	}
+}
+
+// cancellingRepo cancels the import on its first write.
+type cancellingRepo struct {
+	fakeRepo
+	cancel context.CancelFunc
+	calls  atomic.Int64
+}
+
+func (r *cancellingRepo) Create(ctx context.Context, o order.Order) (order.Order, error) {
+	r.calls.Add(1)
+	r.cancel()
+	return r.fakeRepo.Create(ctx, o)
+}
+
+func TestImportStopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repo := &cancellingRepo{fakeRepo: fakeRepo{keys: map[string]bool{}}, cancel: cancel}
+	rows := make([]Row, 10_000)
+	for i := range rows {
+		rows[i] = Row{Item: "A", Quantity: 1, Line: i + 2}
+	}
+	_, err := NewImporter(repo, 2).Import(ctx, "u", "c", "b", rows, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if calls := repo.calls.Load(); calls == int64(len(rows)) {
+		t.Fatalf("wrote all %d rows after cancelling", calls)
 	}
 }
 
