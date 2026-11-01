@@ -2,9 +2,10 @@
 
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/gateway";
-import { forgotSchema, loginSchema, resetSchema } from "@/lib/schemas";
+import { isValidCnpj, normalizeCnpj } from "@/lib/cnpj";
+import { forgotSchema, loginSchema, registerSchema, resetSchema } from "@/lib/schemas";
 import { clearSession, setSession } from "@/lib/session";
-import type { Session } from "@/lib/types";
+import type { Company, Session } from "@/lib/types";
 
 export type FormState = {
   error?: string;
@@ -37,6 +38,40 @@ export async function login(_: FormState, form: FormData): Promise<FormState> {
   redirect(safePath(text(form, "next")));
 }
 
+export async function register(_: FormState, form: FormData): Promise<FormState> {
+  const values = {
+    name: text(form, "name"),
+    email: text(form, "email"),
+    phone: text(form, "phone"),
+    job_function: text(form, "job_function"),
+    job_title: text(form, "job_title"),
+    seniority: text(form, "seniority"),
+    buying_roles: form.getAll("buying_roles").map(String),
+    cnpj: text(form, "cnpj"),
+    razao_social: text(form, "razao_social"),
+  };
+  const parsed = registerSchema.safeParse({
+    ...values,
+    password: text(form, "password"),
+    confirm: text(form, "confirm"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message, values };
+
+  const res = await gateway<Session & { error?: string }>("POST", "/auth/register", {
+    body: { ...parsed.data, confirm: undefined },
+  });
+  if (res.status === 409) {
+    const taken = res.data.error?.includes("CNPJ") ? "Este CNPJ já está cadastrado." : "Este e-mail já está cadastrado.";
+    return { error: taken, values };
+  }
+  if (res.status === 422) return { error: "CNPJ não encontrado na Receita Federal.", values };
+  if (res.status === 502) return { error: "Consulta de CNPJ indisponível. Informe a razão social.", values };
+  if (res.status !== 201) return { error: UNAVAILABLE, values };
+
+  await setSession(res.data.token);
+  redirect("/dashboard");
+}
+
 export async function forgotPassword(_: FormState, form: FormData): Promise<FormState> {
   const email = text(form, "email");
   const parsed = forgotSchema.safeParse({ email });
@@ -67,4 +102,12 @@ export async function resetPassword(_: FormState, form: FormData): Promise<FormS
 export async function logout() {
   await clearSession();
   redirect("/login");
+}
+
+export async function lookupCnpj(value: string): Promise<Pick<Company, "razao_social" | "nome_fantasia"> | null> {
+  const cnpj = normalizeCnpj(value);
+  if (!isValidCnpj(cnpj)) return null;
+  const res = await gateway<Company>("GET", `/auth/cnpj/${cnpj}`);
+  if (res.status !== 200) return null;
+  return { razao_social: res.data.razao_social, nome_fantasia: res.data.nome_fantasia };
 }
