@@ -1,0 +1,30 @@
+# Every setting of the read cache, with its default. Copy this to config.toml,
+# or point READCACHE_CONFIG at another file.
+#
+# Values come from the defaults, then this file, then the environment, so each
+# setting can be overridden by the variable named beside it. An unknown key
+# stops the service at startup.
+#
+# Credentials are never read from this file. Set them in the environment:
+#   PB_EMAIL      PocketBase superuser, for the realtime feed
+#   PB_PASSWORD   PocketBase superuser
+
+[server]
+# Port to listen on. It trusts X-User-Id from the gateway, so keep it private.
+# Env: READCACHE_PORT
+port = 8082
+
+[cache]
+# Each customer's newest half is kept in memory, within these bounds.
+# Keep at least this many rows, so a small customer's pages are all hits.
+# Env: READCACHE_MIN_ROWS
+min_rows = 500
+# Keep at most this many rows per customer, whatever half of them is.
+# Env: READCACHE_MAX_ROWS
+max_rows = 200000
+
+[upstream]
+# The Go API, which answers every miss. Env: UPSTREAM
+api = "http://localhost:8080"
+# PocketBase, whose realtime feed keeps the cache current. Env: PB_URL
+pocketbase = "http://localhost:8090"
