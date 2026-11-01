@@ -1,8 +1,9 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card } from "@/components/ui";
+import { api } from "@/lib/api";
 
 type Summary = {
   total: number;
@@ -12,9 +13,14 @@ type Summary = {
   skipped: { line: number; message: string }[] | null;
 };
 
+// Large files answer 202 at once with a job, which is then polled.
+type Job = Summary & { id: string; status: "queued" | "running" | "done" | "failed"; processed: number };
+
 const SAMPLE = "item,quantity\nTeclado mecânico,1\nMouse sem fio,2\nMonitor 27 polegadas,1\n";
 
-async function importFile(file: File): Promise<Summary> {
+const finished = (job?: Job) => job?.status === "done" || job?.status === "failed";
+
+async function importFile(file: File): Promise<Summary | Job> {
   const res = await fetch("/api/me/orders/import", {
     method: "POST",
     headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -28,7 +34,7 @@ async function importFile(file: File): Promise<Summary> {
   }
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error ?? "Não foi possível importar a planilha.");
-  return data as Summary;
+  return data;
 }
 
 export function ImportCard({ onImported }: { onImported: () => void }) {
@@ -44,6 +50,21 @@ export function ImportCard({ onImported }: { onImported: () => void }) {
     },
   });
 
+  const queued = upload.data && "id" in upload.data ? upload.data : undefined;
+  const job = useQuery({
+    queryKey: ["import-job", queued?.id],
+    enabled: !!queued,
+    queryFn: async () => (await api<Job>(`orders/import/${queued?.id}`)).data,
+    refetchInterval: (query) => (finished(query.state.data) ? false : 1000),
+  });
+
+  // The job saves its progress every 1000 rows, so the table refreshes then too.
+  const processed = job.data?.processed;
+  const status = job.data?.status;
+  useEffect(() => {
+    if (processed !== undefined) onImported();
+  }, [processed, status, onImported]);
+
   function downloadSample() {
     const url = URL.createObjectURL(new Blob([SAMPLE], { type: "text/csv" }));
     const a = document.createElement("a");
@@ -53,7 +74,8 @@ export function ImportCard({ onImported }: { onImported: () => void }) {
     URL.revokeObjectURL(url);
   }
 
-  const s = upload.data;
+  const current = queued ? (job.data ?? queued) : undefined;
+  const s = current ? (finished(current) ? current : undefined) : (upload.data as Summary | undefined);
 
   return (
     <Card title="Importar planilha">
@@ -80,6 +102,16 @@ export function ImportCard({ onImported }: { onImported: () => void }) {
       {upload.isError && (
         <div className="mt-3">
           <Alert>{(upload.error as Error).message}</Alert>
+        </div>
+      )}
+      {current && !finished(current) && (
+        <p className="mt-4 text-sm text-muted">
+          Planilha na fila. {current.processed} de {current.total} linha(s) processada(s). Você pode continuar usando o app.
+        </p>
+      )}
+      {current?.status === "failed" && (
+        <div className="mt-3">
+          <Alert>Não foi possível processar a planilha.</Alert>
         </div>
       )}
       {s && (

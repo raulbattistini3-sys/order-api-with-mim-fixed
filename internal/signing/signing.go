@@ -32,9 +32,6 @@ const (
 	HeaderSignature = "X-Signature" // hex HMAC-SHA256
 )
 
-// MaxBody caps how much of a request body is read for verification.
-const MaxBody = 1 << 20
-
 var (
 	ErrMissing   = errors.New("missing signature headers")
 	ErrTimestamp = errors.New("malformed timestamp")
@@ -58,10 +55,11 @@ func Sign(secret []byte, method, requestURI, timestamp, key string, body []byte)
 
 // Verifier checks signature and freshness.
 type Verifier struct {
-	Secret []byte
-	MaxAge time.Duration    // how old a signed request may be
-	Skew   time.Duration    // tolerated client clock drift into the future
-	Now    func() time.Time // nil means time.Now
+	Secret  []byte
+	MaxAge  time.Duration    // how old a signed request may be
+	Skew    time.Duration    // tolerated client clock drift into the future
+	MaxBody int64            // how much of a request body Middleware reads
+	Now     func() time.Time // nil means time.Now
 }
 
 // Verify checks r's headers against body.
@@ -98,7 +96,7 @@ func (v Verifier) Verify(r *http.Request, body []byte) error {
 // the body readable for the next handler.
 func (v Verifier) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, v.MaxBody))
 		if err != nil {
 			httpjson.Error(w, http.StatusRequestEntityTooLarge, "body too large")
 			return

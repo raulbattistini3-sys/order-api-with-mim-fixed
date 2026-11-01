@@ -4,6 +4,7 @@
 //
 //   node scripts/run.mjs           run the demo, stop everything, exit with its code
 //   node scripts/run.mjs --serve   leave the stack up until Ctrl+C
+//   add --search                   also run Meilisearch and turn search on
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,9 +17,15 @@ const BIN = path.join(ROOT, "bin");
 const LOGS = path.join(BIN, "logs");
 const EXE = process.platform === "win32" ? ".exe" : "";
 const SERVE = process.argv.includes("--serve");
+const SEARCH = process.argv.includes("--search");
+// PocketBase can take a while after a large import: it replays its write-ahead
+// log and runs migrations before it listens, and stopping it there helps nobody.
+const STARTUP_TIMEOUT_MS = 120_000;
 
 const PB_EMAIL = "admin@local.test";
 const PB_PASSWORD = "change-me-please";
+const MEILI_KEY = process.env.MEILI_API_KEY ?? "dev-meilisearch-key-change-me";
+
 const PB_FLAGS = [
   `--dir=${path.join(BIN, "pb_data")}`,
   `--migrationsDir=${path.join(ROOT, "pocketbase", "pb_migrations")}`,
@@ -31,6 +38,7 @@ const env = {
   SIGNATURE_MAX_AGE: "5s", // the demo's late replay waits 6s
   PB_EMAIL,
   PB_PASSWORD,
+  ...(SEARCH && { MEILI_URL: "http://localhost:7700", MEILI_API_KEY: MEILI_KEY }),
 };
 
 const children = [];
@@ -50,7 +58,7 @@ try {
 
 async function main() {
   mkdirSync(LOGS, { recursive: true });
-  await assertPortsFree([8090, 8080, 8081]);
+  await assertPortsFree(SEARCH ? [8090, 8080, 8081, 7700] : [8090, 8080, 8081]);
 
   const pocketbase = await ensurePocketBase();
   if (!existsSync(path.join(ROOT, "attacker", "node_modules"))) {
@@ -63,11 +71,25 @@ async function main() {
 
   start("pocketbase", pocketbase, ["serve", "--http=127.0.0.1:8090", ...PB_FLAGS]);
   await waitFor("http://localhost:8090/api/health");
+  if (SEARCH) {
+    const meilisearch = await ensureMeilisearch();
+    // From bin/, because it reads any config.toml in its working directory and
+    // refuses ours.
+    const flags = [
+      `--db-path=${path.join(BIN, "meili_data")}`,
+      `--dump-dir=${path.join(BIN, "meili_dumps")}`,
+      "--http-addr=127.0.0.1:7700",
+      `--master-key=${MEILI_KEY}`,
+      "--no-analytics",
+    ];
+    start("meilisearch", meilisearch, flags, BIN);
+    await waitFor("http://localhost:7700/health");
+  }
   start("api", path.join(BIN, `api${EXE}`));
   await waitFor("http://localhost:8080/healthz");
   start("gateway", path.join(BIN, `gateway${EXE}`));
   await waitFor("http://localhost:8081/healthz");
-  console.log(`stack is up: pocketbase :8090, api :8080, gateway :8081 (logs in ${LOGS})`);
+  console.log(`stack is up: pocketbase :8090, api :8080, gateway :8081${SEARCH ? ", meilisearch :7700" : ""} (logs in ${LOGS})`);
 
   if (SERVE) {
     console.log("Ctrl+C to stop.");
@@ -109,6 +131,34 @@ async function ensurePocketBase() {
   return target;
 }
 
+// Installs the version pinned in compose.yaml, so the two can't drift.
+async function ensureMeilisearch() {
+  const target = path.join(BIN, `meilisearch${EXE}`);
+  if (existsSync(target)) return target;
+
+  const names = {
+    "win32-x64": "meilisearch-windows-amd64.exe",
+    "linux-x64": "meilisearch-linux-amd64",
+    "linux-arm64": "meilisearch-linux-aarch64",
+    "darwin-x64": "meilisearch-macos-amd64",
+    "darwin-arm64": "meilisearch-macos-apple-silicon",
+  };
+  const name = names[`${process.platform}-${process.arch}`];
+  if (!name) throw new Error(`no Meilisearch download for ${process.platform}/${process.arch}`);
+
+  const version = readFileSync(path.join(ROOT, "compose.yaml"), "utf8").match(/getmeili\/meilisearch:(\S+)/)[1];
+  const release = JSON.parse((await download(`https://api.github.com/repos/meilisearch/meilisearch/releases/tags/${version}`)).toString());
+  const asset = release.assets.find((a) => a.name === name);
+  if (!asset?.digest) throw new Error(`no checksum for ${name} in Meilisearch ${version}`);
+
+  console.log(`downloading ${name} ${version}…`);
+  const binary = await download(asset.browser_download_url);
+  const actual = `sha256:${createHash("sha256").update(binary).digest("hex")}`;
+  if (actual !== asset.digest) throw new Error(`checksum mismatch for ${name}`);
+  writeFileSync(target, binary, { mode: 0o755 });
+  return target;
+}
+
 async function download(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`GET ${url}: ${res.status}`);
@@ -121,17 +171,19 @@ function run(cmd, args, opts = {}) {
   if (res.status !== 0) throw new Error(`${cmd} ${args.join(" ")} failed:\n${res.stdout}${res.stderr}`);
 }
 
-function start(name, cmd, args = []) {
+function start(name, cmd, args = [], cwd = ROOT) {
   const log = path.join(LOGS, `${name}.log`);
   const fd = openSync(log, "w");
-  const proc = spawn(cmd, args, { cwd: ROOT, env, stdio: ["ignore", fd, fd] });
+  const proc = spawn(cmd, args, { cwd, env, stdio: ["ignore", fd, fd] });
   const child = { name, proc, log, exited: false };
   proc.on("exit", () => (child.exited = true));
   children.push(child);
 }
 
 async function waitFor(url) {
-  for (let i = 0; i < 100; i++) {
+  const started = Date.now();
+  let notified = false;
+  while (Date.now() - started < STARTUP_TIMEOUT_MS) {
     const dead = children.find((c) => c.exited);
     if (dead) throw new Error(`${dead.name} exited during startup:\n${readFileSync(dead.log, "utf8")}`);
     try {
@@ -139,9 +191,14 @@ async function waitFor(url) {
     } catch {
       // not listening yet
     }
+    if (!notified && Date.now() - started > 5000) {
+      console.log(`waiting for ${url}…`);
+      notified = true;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error(`timed out waiting for ${url}`);
+  const last = children.at(-1);
+  throw new Error(`timed out waiting for ${url}\n${last.name} log:\n${readFileSync(last.log, "utf8").slice(-2000)}`);
 }
 
 // A leftover server would answer the health checks and hide the real problem.

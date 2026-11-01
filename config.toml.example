@@ -1,0 +1,69 @@
+# Every setting of cmd/api and cmd/gateway, with its default. Copy this to
+# config.toml, or point CONFIG_FILE at another file.
+#
+# Values come from the defaults, then this file, then the environment, so each
+# setting can be overridden by the variable named beside it. An unknown key
+# stops the service at startup.
+#
+# Secrets are never read from this file. Set them in the environment:
+#   CLIENT_SECRET   signs requests, at least 16 characters; the gateway and the
+#                   web app must share it
+#   PB_EMAIL        PocketBase superuser
+#   PB_PASSWORD     PocketBase superuser
+#   MEILI_API_KEY   Meilisearch master key, required when search.url is set
+
+[api]
+# Port the API listens on. Env: PORT
+port = "8080"
+# Goroutines writing import batches. PocketBase takes one writer at a time, so
+# more of them queue for the lock: 16 was 5x slower than 1 and lost rows.
+# Env: IMPORT_WORKERS
+import_workers = 1
+# Orders per PocketBase batch, from 1 to 1000. Bigger is faster but holds the
+# write lock longer. Env: IMPORT_BATCH_SIZE
+import_batch_size = 500
+# Files with more rows than this go to the background queue and answer 202.
+# Env: IMPORT_SYNC_ROWS
+import_sync_rows = 15000
+# Where queued files wait until they finish. Keep it on durable storage, or a
+# restart loses the jobs waiting in it. Env: IMPORT_SPOOL_DIR
+import_spool_dir = "bin/imports"
+# CNPJ lookups. Typed CNPJs are sent here. Env: CNPJ_API_URL
+cnpj_api_url = "https://brasilapi.com.br"
+
+[gateway]
+# Port the gateway listens on. Env: PORT
+port = "8081"
+# The API behind the gateway. Env: UPSTREAM
+upstream = "http://localhost:8080"
+# Requests per second, per client IP. Env: GATEWAY_RATE
+rate = 100.0
+# Requests a client may spend at once above that rate. Env: GATEWAY_BURST
+burst = 200
+# Read the client IP from X-Forwarded-For. Only behind a proxy you control: a
+# client could otherwise forge it to dodge the limit. Env: TRUST_PROXY
+trust_proxy = false
+# How old a signed request may be. Env: SIGNATURE_MAX_AGE
+signature_max_age = "30s"
+
+[pocketbase]
+# Env: PB_URL
+url = "http://localhost:8090"
+
+[search]
+# Meilisearch, such as http://localhost:7700. Empty turns search off, and
+# GET /me/orders/search answers 503. Env: MEILI_URL
+url = ""
+# Created on first run, then filled from the existing orders.
+# Env: MEILI_INDEX
+index = "orders"
+
+[limits]
+# Largest request body on every route, in MiB. The gateway reads the body before
+# it can check the signature, so anyone can make it buffer this much.
+# Env: MAX_BODY_MB
+max_body_mb = 1
+# Largest spreadsheet on POST /me/orders/import, in MiB. Set the same
+# MAX_IMPORT_MB in web/.env.local, which the Next.js app reads instead of this
+# file. The row limit, 500,000 per file, is fixed in code. Env: MAX_IMPORT_MB
+max_import_mb = 96

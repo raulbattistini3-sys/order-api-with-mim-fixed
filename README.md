@@ -15,38 +15,48 @@ This project reproduces a man-in-the-middle attack that duplicates, replays and 
 
 ## Quick start
 
-You need [Go](https://go.dev/dl/) 1.24+ and [Node.js](https://nodejs.org/) 20+. The same commands work in Git Bash, PowerShell, cmd and sh.
+You need [Go](https://go.dev/dl/) 1.24+, [Node.js](https://nodejs.org/) 20+ and GNU Make. The same commands work in Git Bash, PowerShell, cmd and sh.
 
 ```sh
 git clone https://github.com/raulbattistini3-sys/order-api-with-mim-fixed.git
 cd order-api-with-mim-fixed
-node scripts/run.mjs
+make demo
 ```
 
 That one command starts everything, runs the attacks, prints the results and stops. It exits with `0` only if the gateway let exactly one order through. The first run needs internet access: it downloads the PocketBase version pinned in `pocketbase/Dockerfile` into `bin/` and installs the attacker's dependencies.
 
 | Command | What it does |
 |---|---|
-| `node scripts/run.mjs` | Runs the full demo once |
-| `node scripts/run.mjs --serve` | Keeps the services up until Ctrl+C |
-| `go test ./...` | Runs the Go tests |
-| `npm test` (in `attacker/` or `web/`) | Runs the JS tests |
+| `make demo` | Runs the full demo once |
+| `make serve` | Keeps the services up until Ctrl+C |
+| `make serve-search` | Same as `make serve`, with Meilisearch search on |
+| `make web` | Starts the Next.js app |
+| `make test` | Runs the Go tests |
+| `make e2e` | Runs the gateway and API against a real PocketBase. Needs `bin/pocketbase`, which `make demo` fetches |
+| `make web-test` | Runs the web tests |
+| `make web-check` | Typechecks and lints the web app |
+| `npm test` (in `attacker/`) | Runs the attacker's tests |
+
+`make` on its own lists every target.
 
 Service logs go to `bin/logs/`.
 
 ### Configuration
 
-Gateway: `GATEWAY_RATE` (req/s per IP, default 100), `GATEWAY_BURST` (default 200), `TRUST_PROXY=1`, `SIGNATURE_MAX_AGE` (default 30s). API: `IMPORT_WORKERS` (default 16), `CNPJ_API_URL`. Both: `CLIENT_SECRET` must match.
+The API and gateway read `config.toml` (or the file named by `CONFIG_FILE`); `config.toml.example` documents every setting, and an unknown key stops them at startup. Values come from the built-in defaults, then the file, then the environment, so `MAX_IMPORT_MB=128` overrides `limits.max_import_mb`. Each setting's variable is its old name: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
+
+Secrets are read from the environment only: `CLIENT_SECRET`, `PB_EMAIL` and `PB_PASSWORD`. `limits.max_body_mb` applies to every route and `limits.max_import_mb` to `POST /me/orders/import`; set `MAX_IMPORT_MB` in `web/.env.local` too, since the Next.js app can't read `config.toml`.
 
 ### Frontend
 
-With the services up (`--serve`), in a second terminal:
+With the services up (`make serve`), in a second terminal:
 
 ```sh
 cd web
 cp .env.example .env.local
 npm install
-npm run dev
+cd ..
+make web
 ```
 
 Open http://localhost:3000 and create an account. With no SMTP server configured, password reset links are printed to `bin/logs/pocketbase.log`. CNPJ data comes from [BrasilAPI](https://brasilapi.com.br/), so the CNPJs you type are sent to it; set `CNPJ_API_URL` on the API to use another source.
@@ -126,9 +136,17 @@ browser ──httpOnly cookie──▶ Next.js server ──JWT + HMAC signature
 
 ## Spreadsheet import
 
-`POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, processed by a bounded pool of workers (`IMPORT_WORKERS`). It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows and 64 MB per file.
+`POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, written in PocketBase batches (`api.import_batch_size`) by a pool of workers sharing a channel (`api.import_workers`). PocketBase takes one writer at a time, so one worker is the fastest setting, and a batch that fails, such as on a re-import, retries its rows one by one. It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows per file, and 96 MiB by default (`limits.max_import_mb`).
+
+Files of up to `api.import_sync_rows` rows (default 15,000) finish while you wait. Larger ones answer `202` with a job at once, and `GET /me/orders/import/{id}` reports its progress. Jobs run one at a time, oldest first. They are stored in PocketBase and the file in `api.import_spool_dir`, so a restart resumes the unfinished job from its first row, and the per-row keys stop it writing any order twice. The queue expects a single API replica.
 
 In the app, the orders page has an **Importar planilha** card with a downloadable template.
+
+## Search
+
+Order search runs on a self-hosted [Meilisearch](https://www.meilisearch.com/), and is off until `search.url` is set. An indexer in the API copies orders into it, oldest first, from wherever Meilisearch left off. That covers imports, older orders and anything written during an outage, and a search outage can't fail a write. Results lag writes by a few seconds. The API sets the customer filter from the session.
+
+`make serve-search` downloads the version pinned in `compose.yaml` into `bin/` on first use and runs it on `127.0.0.1:7700`, with no Docker needed. Set `MEILI_API_KEY` to replace the local development key. `docker compose up -d meilisearch` works too.
 
 ## Load test
 
@@ -165,7 +183,9 @@ Served by the gateway on `:8081`. The API on `:8080` has the same routes with no
 | `POST /auth/forgot-password`, `/auth/reset-password` | Password reset. The first always returns `204`, so it can't reveal which emails exist |
 | `GET /auth/cnpj/{cnpj}` | Looks up a company. Accepts numeric and alphanumeric CNPJs |
 | `GET /me` | The session's user and company |
-| `GET`, `POST /me/orders` | The session's orders. `POST` also needs `Idempotency-Key`. Body: `{"item","quantity"}` |
+| `GET`, `POST /me/orders` | The session's orders. `GET` takes `limit` (1–200, default 100) and `cursor`, and returns `{orders, next_cursor}`, newest first. `POST` also needs `Idempotency-Key`. Body: `{"item","quantity"}` |
+| `GET /me/orders/summary` | `{orders, units, items, top_items}`, summed in the database |
+| `GET /me/orders/search?q=T` | The session's orders matching `T`, from Meilisearch. Takes `limit` (1–100, default 20). `503` when search isn't configured |
 | `GET`, `POST /me/todos`, `PATCH`, `DELETE /me/todos/{id}` | The session's to-dos |
 | `GET /healthz` | Returns `204` |
 
@@ -173,15 +193,19 @@ Every route except `/healthz` needs `X-Timestamp` and `X-Signature`, and `/me` r
 
 ## Project layout
 
-This follows the Go team's [server project layout](https://go.dev/doc/modules/layout#server-project) and uses only the standard library. Dependencies are passed through constructors and wired in each `main`. Domain packages define the interfaces they need, and only `internal/pocketbase` knows about the database.
+This follows the Go team's [server project layout](https://go.dev/doc/modules/layout#server-project). Each domain package defines a `Service` interface for its logic, the interfaces it needs from its stores, and `Routes`, whose handlers are functions closing over the service. Everything is passed in as a dependency and assembled in `internal/api` and each `main`, so a test can swap any layer, and only `internal/pocketbase` knows about the database.
 
 ```
 cmd/api               order API: wiring only
 cmd/gateway           protective gateway: wiring only
+internal/api          assembles the API's routes from its services
+internal/e2e          the whole stack against a real PocketBase
+configs               config.toml and environment loading
 internal/auth         accounts, sessions, HTTP handlers
 internal/company      Company, CNPJ validation, registry lookup
-internal/order        Order, Repository, HTTP handlers
+internal/order        Order, Service, Repository, HTTP handlers
 internal/todo         per-user to-dos
+internal/search       Meilisearch client and the order indexer
 internal/gateway      rate limit → signature → idempotency → proxy
 internal/signing      HMAC verification and middleware
 internal/idempotency  Store interface and middleware

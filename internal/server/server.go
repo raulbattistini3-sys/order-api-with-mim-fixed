@@ -11,23 +11,15 @@ import (
 	"time"
 )
 
-// Env returns the environment variable key, or fallback when it is empty.
-func Env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 // Run serves handler on addr, logging each request, until SIGINT or SIGTERM.
 func Run(addr string, handler http.Handler, log *slog.Logger) error {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           logRequests(log, handler),
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       90 * time.Second,
+		WriteTimeout:      90 * time.Second,
+		IdleTimeout:       90 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

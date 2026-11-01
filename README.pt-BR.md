@@ -15,38 +15,48 @@ Este projeto reproduz um ataque man-in-the-middle que duplica, reenvia e adulter
 
 ## Como rodar
 
-Você precisa do [Go](https://go.dev/dl/) 1.24+ e do [Node.js](https://nodejs.org/) 20+. Os mesmos comandos funcionam no Git Bash, PowerShell, cmd e sh.
+Você precisa do [Go](https://go.dev/dl/) 1.24+, do [Node.js](https://nodejs.org/) 20+ e do GNU Make. Os mesmos comandos funcionam no Git Bash, PowerShell, cmd e sh.
 
 ```sh
 git clone https://github.com/raulbattistini3-sys/order-api-with-mim-fixed.git
 cd order-api-with-mim-fixed
-node scripts/run.mjs
+make demo
 ```
 
 Esse único comando sobe tudo, executa os ataques, mostra os resultados e encerra. Ele só termina com código `0` se o gateway deixar passar exatamente um pedido. A primeira execução precisa de internet: ela baixa para `bin/` a versão do PocketBase fixada em `pocketbase/Dockerfile` e instala as dependências do atacante.
 
 | Comando | O que faz |
 |---|---|
-| `node scripts/run.mjs` | Executa a demo completa uma vez |
-| `node scripts/run.mjs --serve` | Mantém os serviços no ar até o Ctrl+C |
-| `go test ./...` | Executa os testes em Go |
-| `npm test` (em `attacker/` ou `web/`) | Executa os testes em JS |
+| `make demo` | Executa a demo completa uma vez |
+| `make serve` | Mantém os serviços no ar até o Ctrl+C |
+| `make serve-search` | Igual ao `make serve`, com a busca do Meilisearch ligada |
+| `make web` | Inicia o app Next.js |
+| `make test` | Executa os testes em Go |
+| `make e2e` | Executa o gateway e a API contra um PocketBase real. Precisa de `bin/pocketbase`, baixado pelo `make demo` |
+| `make web-test` | Executa os testes do web |
+| `make web-check` | Checa os tipos e o lint do app web |
+| `npm test` (em `attacker/`) | Executa os testes do atacante |
+
+`make` sozinho lista todos os alvos.
 
 Os logs dos serviços ficam em `bin/logs/`.
 
 ### Configuração
 
-Gateway: `GATEWAY_RATE` (req/s por IP, padrão 100), `GATEWAY_BURST` (padrão 200), `TRUST_PROXY=1`, `SIGNATURE_MAX_AGE` (padrão 30s). API: `IMPORT_WORKERS` (padrão 16), `CNPJ_API_URL`. Ambos: `CLIENT_SECRET` precisa ser igual.
+A API e o gateway leem o `config.toml` (ou o arquivo indicado em `CONFIG_FILE`); o `config.toml.example` documenta cada ajuste, e uma chave desconhecida impede a inicialização. Os valores vêm dos padrões internos, depois do arquivo e depois do ambiente, então `MAX_IMPORT_MB=128` sobrescreve `limits.max_import_mb`. A variável de cada ajuste mantém o nome antigo: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
+
+Os segredos são lidos só do ambiente: `CLIENT_SECRET`, `PB_EMAIL` e `PB_PASSWORD`. `limits.max_body_mb` vale para todas as rotas e `limits.max_import_mb` para `POST /me/orders/import`; defina `MAX_IMPORT_MB` também em `web/.env.local`, porque o app Next.js não lê o `config.toml`.
 
 ### Frontend
 
-Com os serviços no ar (`--serve`), em outro terminal:
+Com os serviços no ar (`make serve`), em outro terminal:
 
 ```sh
 cd web
 cp .env.example .env.local
 npm install
-npm run dev
+cd ..
+make web
 ```
 
 Abra http://localhost:3000 e crie uma conta. Sem um servidor SMTP configurado, os links de redefinição de senha aparecem em `bin/logs/pocketbase.log`. Os dados de CNPJ vêm da [BrasilAPI](https://brasilapi.com.br/), então os CNPJs digitados são enviados a ela; defina `CNPJ_API_URL` na API para usar outra fonte.
@@ -126,9 +136,17 @@ navegador ──cookie httpOnly──▶ servidor Next.js ──JWT + assinatura
 
 ## Importação de planilhas
 
-`POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, processado por um pool limitado de workers (`IMPORT_WORKERS`). Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas e 64 MB por arquivo.
+`POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, gravado em lotes do PocketBase (`api.import_batch_size`) por um pool de workers que compartilham um canal (`api.import_workers`). O PocketBase aceita um escritor por vez, então um worker é o ajuste mais rápido, e um lote que falha, como numa reimportação, repete suas linhas uma a uma. Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas por arquivo e 96 MiB por padrão (`limits.max_import_mb`).
+
+Arquivos de até `api.import_sync_rows` linhas (padrão 15.000) terminam enquanto você espera. Os maiores respondem `202` com um job na hora, e `GET /me/orders/import/{id}` informa o progresso. Os jobs rodam um por vez, do mais antigo para o mais novo. Eles ficam no PocketBase e o arquivo em `api.import_spool_dir`, então um reinício retoma o job inacabado desde a primeira linha, e as chaves por linha impedem que um pedido seja gravado duas vezes. A fila pressupõe uma única réplica da API.
 
 No app, a página de pedidos tem um cartão **Importar planilha** com um modelo para baixar.
+
+## Busca
+
+A busca de pedidos roda num [Meilisearch](https://www.meilisearch.com/) auto-hospedado e fica desligada até `search.url` ser definido. Um indexador na API copia os pedidos para ele, do mais antigo para o mais novo, a partir de onde o Meilisearch parou. Isso cobre importações, pedidos antigos e o que for gravado durante uma queda, e uma queda da busca não derruba nenhuma escrita. Os resultados atrasam alguns segundos em relação às escritas. A API define o filtro de cliente a partir da sessão.
+
+O `make serve-search` baixa para `bin/`, no primeiro uso, a versão fixada em `compose.yaml` e a roda em `127.0.0.1:7700`, sem precisar de Docker. Defina `MEILI_API_KEY` para trocar a chave local de desenvolvimento. `docker compose up -d meilisearch` também funciona.
 
 ## Teste de carga
 
@@ -165,7 +183,9 @@ Servida pelo gateway em `:8081`. A API em `:8080` tem as mesmas rotas, sem nenhu
 | `POST /auth/forgot-password`, `/auth/reset-password` | Redefinição de senha. A primeira sempre retorna `204`, para não revelar quais e-mails existem |
 | `GET /auth/cnpj/{cnpj}` | Consulta uma empresa. Aceita CNPJ numérico e alfanumérico |
 | `GET /me` | O usuário e a empresa da sessão |
-| `GET`, `POST /me/orders` | Os pedidos da sessão. `POST` também exige `Idempotency-Key`. Corpo: `{"item","quantity"}` |
+| `GET`, `POST /me/orders` | Os pedidos da sessão. `GET` aceita `limit` (1–200, padrão 100) e `cursor`, e retorna `{orders, next_cursor}`, do mais novo para o mais antigo. `POST` também exige `Idempotency-Key`. Corpo: `{"item","quantity"}` |
+| `GET /me/orders/summary` | `{orders, units, items, top_items}`, somados no banco |
+| `GET /me/orders/search?q=T` | Os pedidos da sessão que correspondem a `T`, vindos do Meilisearch. Aceita `limit` (1–100, padrão 20). `503` quando a busca não está configurada |
 | `GET`, `POST /me/todos`, `PATCH`, `DELETE /me/todos/{id}` | As tarefas da sessão |
 | `GET /healthz` | Retorna `204` |
 
@@ -173,15 +193,19 @@ Toda rota exceto `/healthz` exige `X-Timestamp` e `X-Signature`, e as rotas `/me
 
 ## Estrutura do projeto
 
-Segue o [layout de projetos de servidor](https://go.dev/doc/modules/layout#server-project) do time do Go e usa apenas a biblioteca padrão. As dependências são passadas por construtores e ligadas em cada `main`. Os pacotes de domínio definem as interfaces de que precisam, e só `internal/pocketbase` conhece o banco.
+Segue o [layout de projeto de servidor](https://go.dev/doc/modules/layout#server-project) da equipe do Go. Cada pacote de domínio define uma interface `Service` para sua lógica, as interfaces que precisa dos seus repositórios e `Routes`, cujos handlers são funções que capturam o serviço. Tudo é passado como dependência e montado em `internal/api` e em cada `main`, então um teste pode trocar qualquer camada, e só `internal/pocketbase` conhece o banco.
 
 ```
 cmd/api               API de pedidos: só a ligação das dependências
 cmd/gateway           gateway de proteção: só a ligação das dependências
+internal/api          monta as rotas da API a partir dos serviços
+internal/e2e          a stack inteira contra um PocketBase real
+configs               leitura do config.toml e do ambiente
 internal/auth         contas, sessões, handlers HTTP
 internal/company      Company, validação de CNPJ, consulta ao registro
-internal/order        Order, Repository, handlers HTTP
+internal/order        Order, Service, Repository, handlers HTTP
 internal/todo         tarefas por usuário
+internal/search       cliente do Meilisearch e indexador de pedidos
 internal/gateway      limite de taxa → assinatura → idempotência → proxy
 internal/signing      verificação HMAC e middleware
 internal/idempotency  interface Store e middleware

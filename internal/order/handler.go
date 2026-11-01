@@ -5,68 +5,163 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/you/orderguard/internal/auth"
 	"github.com/you/orderguard/internal/httpjson"
 )
 
-// Handler serves the order endpoints.
-type Handler struct {
-	repo Repository
-	log  *slog.Logger
+// Routes adds the order endpoints to mux.
+func Routes(mux *http.ServeMux, svc Service, log *slog.Logger) {
+	mux.Handle("POST /orders", create(svc, log))
+	mux.Handle("GET /orders", list(svc, log))
+	mux.Handle("POST /me/orders", auth.RequireIdentity(createMine(svc, log)))
+	mux.Handle("GET /me/orders", auth.RequireIdentity(listMine(svc, log)))
+	mux.Handle("GET /me/orders/summary", auth.RequireIdentity(summaryMine(svc, log)))
+	mux.Handle("GET /me/orders/search", auth.RequireIdentity(searchMine(svc, log)))
 }
 
-// NewHandler returns a Handler backed by repo.
-func NewHandler(repo Repository, log *slog.Logger) *Handler {
-	return &Handler{repo: repo, log: log}
-}
-
-// Register adds the order routes to mux.
-func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /orders", h.create)
-	mux.HandleFunc("GET /orders", h.list)
-	mux.Handle("POST /me/orders", auth.RequireIdentity(http.HandlerFunc(h.createMine)))
-	mux.Handle("GET /me/orders", auth.RequireIdentity(http.HandlerFunc(h.listMine)))
-}
-
-type createRequest struct {
-	Customer string `json:"customer"`
-	Item     string `json:"item"`
-	Quantity int    `json:"quantity"`
-}
-
-func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
-	var req createRequest
-	if !decode(w, r, &req) {
-		return
+func create(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Customer string `json:"customer"`
+			Item     string `json:"item"`
+			Quantity int    `json:"quantity"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		place(w, r, svc, log, Order{
+			Customer:       strings.TrimSpace(req.Customer),
+			Item:           strings.TrimSpace(req.Item),
+			Quantity:       req.Quantity,
+			IdempotencyKey: r.Header.Get(RefHeader),
+		})
 	}
-	h.place(w, r, Order{
-		Customer:       strings.TrimSpace(req.Customer),
-		Item:           strings.TrimSpace(req.Item),
-		Quantity:       req.Quantity,
-		IdempotencyKey: r.Header.Get(RefHeader),
-	})
 }
 
 // createMine takes the customer from the session, never from the body, so a
 // user can't order in someone else's name.
-func (h *Handler) createMine(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Item     string `json:"item"`
-		Quantity int    `json:"quantity"`
+func createMine(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Item     string `json:"item"`
+			Quantity int    `json:"quantity"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		id, _ := auth.IdentityFrom(r.Context())
+		place(w, r, svc, log, Order{
+			Customer:       id.UserID,
+			Company:        id.CompanyID,
+			Item:           strings.TrimSpace(req.Item),
+			Quantity:       req.Quantity,
+			IdempotencyKey: r.Header.Get(RefHeader),
+		})
 	}
-	if !decode(w, r, &req) {
-		return
+}
+
+func place(w http.ResponseWriter, r *http.Request, svc Service, log *slog.Logger, in Order) {
+	o, err := svc.Place(r.Context(), in)
+	switch {
+	case errors.Is(err, ErrInvalid):
+		httpjson.Error(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrDuplicate):
+		httpjson.Error(w, http.StatusConflict, "order for this Idempotency-Key already exists")
+	case err != nil:
+		log.Error("create order", "err", err)
+		httpjson.Error(w, http.StatusInternalServerError, "internal error")
+	default:
+		httpjson.Write(w, http.StatusCreated, o)
 	}
-	id, _ := auth.IdentityFrom(r.Context())
-	h.place(w, r, Order{
-		Customer:       id.UserID,
-		Company:        id.CompanyID,
-		Item:           strings.TrimSpace(req.Item),
-		Quantity:       req.Quantity,
-		IdempotencyKey: r.Header.Get(RefHeader),
-	})
+}
+
+// list handles GET /orders?customer=X and returns the count and 50 newest orders.
+func list(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		customer := r.URL.Query().Get("customer")
+		if customer == "" {
+			httpjson.Error(w, http.StatusBadRequest, "customer query parameter required")
+			return
+		}
+		orders, total, err := svc.Recent(r.Context(), customer)
+		if err != nil {
+			log.Error("list orders", "err", err)
+			httpjson.Error(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		httpjson.Write(w, http.StatusOK, map[string]any{"count": total, "orders": orders})
+	}
+}
+
+// listMine handles GET /me/orders?limit=N&cursor=C.
+func listMine(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		limit := defaultPage
+		if v := r.URL.Query().Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				httpjson.Error(w, http.StatusBadRequest, ErrInvalidLimit.Error())
+				return
+			}
+			limit = n
+		}
+		page, err := svc.Page(r.Context(), id.UserID, limit, r.URL.Query().Get("cursor"))
+		switch {
+		case errors.Is(err, ErrInvalidLimit), errors.Is(err, ErrInvalidCursor):
+			httpjson.Error(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			log.Error("list orders", "err", err)
+			httpjson.Error(w, http.StatusInternalServerError, "internal error")
+		default:
+			httpjson.Write(w, http.StatusOK, page)
+		}
+	}
+}
+
+func summaryMine(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		totals, err := svc.Totals(r.Context(), id.UserID)
+		if err != nil {
+			log.Error("order totals", "err", err)
+			httpjson.Error(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		httpjson.Write(w, http.StatusOK, totals)
+	}
+}
+
+// searchMine handles GET /me/orders/search?q=T&limit=N.
+func searchMine(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		limit := defaultMatches
+		if v := r.URL.Query().Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				httpjson.Error(w, http.StatusBadRequest, ErrInvalidSearch.Error())
+				return
+			}
+			limit = n
+		}
+		orders, err := svc.Search(r.Context(), id.UserID, r.URL.Query().Get("q"), limit)
+		switch {
+		case errors.Is(err, ErrInvalidSearch):
+			httpjson.Error(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrSearchDisabled):
+			httpjson.Error(w, http.StatusServiceUnavailable, err.Error())
+		case err != nil:
+			// Orders still work without search, so this isn't a 500.
+			log.Error("search orders", "err", err)
+			httpjson.Error(w, http.StatusBadGateway, "search unavailable")
+		default:
+			httpjson.Write(w, http.StatusOK, map[string]any{"orders": orders})
+		}
+	}
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -77,50 +172,4 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
-}
-
-func (h *Handler) place(w http.ResponseWriter, r *http.Request, in Order) {
-	if err := in.Validate(); err != nil {
-		httpjson.Error(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	o, err := h.repo.Create(r.Context(), in)
-	switch {
-	case errors.Is(err, ErrDuplicate):
-		httpjson.Error(w, http.StatusConflict, "order for this Idempotency-Key already exists")
-	case err != nil:
-		h.log.Error("create order", "err", err)
-		httpjson.Error(w, http.StatusInternalServerError, "internal error")
-	default:
-		httpjson.Write(w, http.StatusCreated, o)
-	}
-}
-
-// list handles GET /orders?customer=X and returns the count and 50 newest orders.
-func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	customer := r.URL.Query().Get("customer")
-	if customer == "" {
-		httpjson.Error(w, http.StatusBadRequest, "customer query parameter required")
-		return
-	}
-	h.respondList(w, r, customer)
-}
-
-func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
-	id, _ := auth.IdentityFrom(r.Context())
-	h.respondList(w, r, id.UserID)
-}
-
-func (h *Handler) respondList(w http.ResponseWriter, r *http.Request, customer string) {
-	orders, total, err := h.repo.ListByCustomer(r.Context(), customer, 50)
-	if err != nil {
-		h.log.Error("list orders", "err", err)
-		httpjson.Error(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if orders == nil {
-		orders = []Order{}
-	}
-	httpjson.Write(w, http.StatusOK, map[string]any{"count": total, "orders": orders})
 }

@@ -53,7 +53,14 @@ export type Order = {
   created: string;
 };
 
-export type OrderList = { count: number; orders: Order[] };
+export type OrderPage = { orders: Order[]; next_cursor: string };
+
+export type OrderSummary = {
+  orders: number;
+  units: number;
+  items: number;
+  top_items: { item: string; units: number; orders: number }[];
+};
 
 export type Todo = {
   id: string;

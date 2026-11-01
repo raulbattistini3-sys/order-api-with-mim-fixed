@@ -37,8 +37,8 @@ type Row struct {
 // RowError is a row that couldn't be parsed. Such rows are reported, not
 // imported, so one bad line doesn't sink the whole file.
 type RowError struct {
-	Line    int
-	Message string
+	Line    int    `json:"line"`
+	Message string `json:"message"`
 }
 
 // zip local file header: .xlsx is a zip, CSV is not.
@@ -114,7 +114,7 @@ func toRow(h header, cells []string, line int) (Row, *RowError) {
 	}
 	qty, ok := parseQuantity(rawQty)
 	if !ok || qty < 1 || qty > 10_000 {
-		return Row{}, &RowError{Line: line, Message: fmt.Sprintf("quantity %q must be a number from 1 to 10000", rawQty)}
+		return Row{}, &RowError{Line: line, Message: fmt.Sprintf("quantity %.40q must be a number from 1 to 10000", rawQty)}
 	}
 	return Row{Item: item, Quantity: qty, Line: line}, nil
 }

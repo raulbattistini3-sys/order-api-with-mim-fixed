@@ -1,8 +1,6 @@
 package orderimport
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,54 +10,69 @@ import (
 	"github.com/you/orderguard/internal/httpjson"
 )
 
-// MaxBytes caps the upload size. A 300k-row product export fits comfortably.
-const MaxBytes = 64 << 20
-
-// Handler serves the spreadsheet import endpoint.
-type Handler struct {
-	importer *Importer
-	log      *slog.Logger
+// Routes adds the import endpoints to mux. maxBytes caps the upload size.
+func Routes(mux *http.ServeMux, svc Service, maxBytes int64, log *slog.Logger) {
+	mux.Handle("POST /me/orders/import", auth.RequireIdentity(importOrders(svc, maxBytes, log)))
+	mux.Handle("GET /me/orders/import/{id}", auth.RequireIdentity(jobStatus(svc, log)))
 }
 
-// NewHandler returns a Handler backed by importer.
-func NewHandler(importer *Importer, log *slog.Logger) *Handler {
-	return &Handler{importer: importer, log: log}
+// jobResponse is what a client sees of a Job.
+type jobResponse struct {
+	ID         string     `json:"id"`
+	Status     string     `json:"status"`
+	Total      int        `json:"total"`
+	Processed  int        `json:"processed"`
+	Created    int        `json:"created"`
+	Duplicates int        `json:"duplicates"`
+	Failed     int        `json:"failed"`
+	Skipped    []RowError `json:"skipped"`
 }
 
-// Register adds the import route to mux. It expects the gateway's identity
-// headers, so it goes behind auth.RequireIdentity.
-func (h *Handler) Register(mux *http.ServeMux) {
-	mux.Handle("POST /me/orders/import", auth.RequireIdentity(http.HandlerFunc(h.importOrders)))
+func newJobResponse(j Job) jobResponse {
+	return jobResponse{
+		ID: j.ID, Status: j.Status, Total: j.Total, Processed: j.Processed,
+		Created: j.Imported, Duplicates: j.Duplicates, Failed: j.Failed, Skipped: j.Skipped,
+	}
 }
 
-func (h *Handler) importOrders(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(io.LimitReader(http.MaxBytesReader(w, r.Body, MaxBytes+1), MaxBytes+1))
-	if err != nil || len(data) > MaxBytes {
-		httpjson.Error(w, http.StatusRequestEntityTooLarge, "file too large")
-		return
+func importOrders(svc Service, maxBytes int64, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
+		if err != nil {
+			httpjson.Error(w, http.StatusRequestEntityTooLarge, "file too large")
+			return
+		}
+		id, _ := auth.IdentityFrom(r.Context())
+		summary, job, err := svc.Submit(r.Context(), id.UserID, id.CompanyID, data)
+		var unreadable *ParseError
+		switch {
+		case errors.Is(err, ErrTooManyRows):
+			httpjson.Error(w, http.StatusRequestEntityTooLarge, err.Error())
+		case errors.As(err, &unreadable):
+			httpjson.Error(w, http.StatusUnprocessableEntity, err.Error())
+		case err != nil:
+			log.Error("import orders", "err", err)
+			httpjson.Error(w, http.StatusInternalServerError, "import interrupted")
+		case job != nil:
+			httpjson.Write(w, http.StatusAccepted, newJobResponse(*job))
+		default:
+			httpjson.Write(w, http.StatusOK, summary)
+		}
 	}
-	rows, skipped, err := Parse(data)
-	switch {
-	case errors.Is(err, ErrTooManyRows):
-		httpjson.Error(w, http.StatusRequestEntityTooLarge, err.Error())
-		return
-	case err != nil:
-		httpjson.Error(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
+}
 
-	id, _ := auth.IdentityFrom(r.Context())
-	// The batch id scopes the deterministic keys to this user and this file:
-	// the same file re-imported writes each order once; another user's copy is
-	// independent.
-	sum := sha256.Sum256(data)
-	batchID := id.UserID + ":" + hex.EncodeToString(sum[:])
-
-	summary, err := h.importer.Import(r.Context(), id.UserID, id.CompanyID, batchID, rows, skipped)
-	if err != nil {
-		h.log.Error("import orders", "err", err)
-		httpjson.Error(w, http.StatusInternalServerError, "import interrupted")
-		return
+func jobStatus(svc Service, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		job, err := svc.Job(r.Context(), id.UserID, r.PathValue("id"))
+		switch {
+		case errors.Is(err, ErrJobNotFound):
+			httpjson.Error(w, http.StatusNotFound, "import not found")
+		case err != nil:
+			log.Error("import status", "err", err)
+			httpjson.Error(w, http.StatusInternalServerError, "internal error")
+		default:
+			httpjson.Write(w, http.StatusOK, newJobResponse(job))
+		}
 	}
-	httpjson.Write(w, http.StatusOK, summary)
 }

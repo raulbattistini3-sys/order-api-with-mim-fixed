@@ -2,7 +2,10 @@ module github.com/you/orderguard
 
 go 1.25.0
 
-require github.com/xuri/excelize/v2 v2.11.0
+require (
+	github.com/BurntSushi/toml v1.6.0
+	github.com/xuri/excelize/v2 v2.11.0
+)
 
 require (
 	github.com/richardlehane/mscfb v1.0.7 // indirect
