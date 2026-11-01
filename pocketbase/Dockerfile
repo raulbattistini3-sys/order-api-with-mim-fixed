@@ -6,6 +6,7 @@ RUN apk add --no-cache ca-certificates unzip wget \
  && unzip /tmp/pb.zip pocketbase -d /pb \
  && rm /tmp/pb.zip
 COPY pb_migrations /pb/pb_migrations
+COPY pb_hooks /pb/pb_hooks
 COPY entrypoint.sh /pb/entrypoint.sh
 EXPOSE 8090
 ENTRYPOINT ["/bin/sh", "/pb/entrypoint.sh"]

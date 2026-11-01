@@ -19,7 +19,11 @@ const SERVE = process.argv.includes("--serve");
 
 const PB_EMAIL = "admin@local.test";
 const PB_PASSWORD = "change-me-please";
-const PB_FLAGS = [`--dir=${path.join(BIN, "pb_data")}`, `--migrationsDir=${path.join(ROOT, "pocketbase", "pb_migrations")}`];
+const PB_FLAGS = [
+  `--dir=${path.join(BIN, "pb_data")}`,
+  `--migrationsDir=${path.join(ROOT, "pocketbase", "pb_migrations")}`,
+  `--hooksDir=${path.join(ROOT, "pocketbase", "pb_hooks")}`,
+];
 
 const env = {
   ...process.env,
