@@ -24,6 +24,7 @@ type Order struct {
 	Item           string `json:"item"`
 	Quantity       int    `json:"quantity"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	Company        string `json:"company,omitempty"`
 	Created        string `json:"created,omitempty"`
 }
 
