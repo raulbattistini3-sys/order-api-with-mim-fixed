@@ -11,8 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 
+	"github.com/you/orderguard/configs"
 	"github.com/you/orderguard/internal/auth"
 	"github.com/you/orderguard/internal/company"
 	"github.com/you/orderguard/internal/order"
@@ -24,24 +24,24 @@ import (
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	pb := pocketbase.New(server.Env("PB_URL", "http://localhost:8090"), os.Getenv("PB_EMAIL"), os.Getenv("PB_PASSWORD"))
-	directory := company.NewBrasilAPI(server.Env("CNPJ_API_URL", "https://brasilapi.com.br"))
-
-	orders := pocketbase.NewOrderRepository(pb)
-	importWorkers, err := strconv.Atoi(server.Env("IMPORT_WORKERS", "16"))
+	cfg, err := configs.Load()
 	if err != nil {
-		log.Error("IMPORT_WORKERS", "err", err)
+		log.Error("config", "err", err)
 		os.Exit(1)
 	}
+	pb := pocketbase.New(cfg.PocketBase.URL, cfg.PocketBase.Email, cfg.PocketBase.Password)
+	directory := company.NewBrasilAPI(cfg.API.CNPJAPIURL)
+
+	orders := pocketbase.NewOrderRepository(pb)
 
 	mux := http.NewServeMux()
 	order.NewHandler(orders, log).Register(mux)
-	orderimport.NewHandler(orderimport.NewImporter(orders, importWorkers), log).Register(mux)
+	orderimport.NewHandler(orderimport.NewImporter(orders, cfg.API.ImportWorkers), cfg.Limits.ImportBytes(), log).Register(mux)
 	todo.NewHandler(pocketbase.NewTodoRepository(pb), log).Register(mux)
 	auth.NewHandler(pocketbase.NewAccounts(pb), pocketbase.NewCompanyRepository(pb), directory, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
-	if err := server.Run(":"+server.Env("PORT", "8080"), mux, log); err != nil {
+	if err := server.Run(":"+cfg.API.Port, mux, log); err != nil {
 		log.Error("api stopped", "err", err)
 		os.Exit(1)
 	}

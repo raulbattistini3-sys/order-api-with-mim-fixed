@@ -42,7 +42,7 @@ func setup(t *testing.T, upstream http.HandlerFunc) *httptest.Server {
 	u, _ := url.Parse(api.URL)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	limiter := ratelimit.New(0, 0) // disabled; the limiter has its own tests
-	h := New(signing.Verifier{Secret: secret, MaxAge: time.Minute}, noStore{}, sessions{}, limiter, false, u, log)
+	h := New(signing.Verifier{Secret: secret, MaxAge: time.Minute}, Limits{Body: 1 << 10, Import: 1 << 11}, noStore{}, sessions{}, limiter, false, u, log)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -64,6 +64,30 @@ func signed(t *testing.T, srv *httptest.Server, method, uri, body string, header
 	}
 	res.Body.Close()
 	return res
+}
+
+func TestBodyLimits(t *testing.T) {
+	srv := setup(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	session := map[string]string{"Authorization": "Bearer good"}
+
+	for _, tt := range []struct {
+		name string
+		uri  string
+		size int
+		want int
+	}{
+		{"default route at limit", "/auth/login", 1 << 10, http.StatusOK},
+		{"default route over limit", "/auth/login", 1<<10 + 1, http.StatusRequestEntityTooLarge},
+		{"import over default limit", "/me/orders/import", 1 << 11, http.StatusOK},
+		{"import over its limit", "/me/orders/import", 1<<11 + 1, http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := signed(t, srv, http.MethodPost, tt.uri, strings.Repeat("x", tt.size), session)
+			if res.StatusCode != tt.want {
+				t.Fatalf("status = %d, want %d", res.StatusCode, tt.want)
+			}
+		})
+	}
 }
 
 func TestSessionRouteForwardsVerifiedIdentityOnly(t *testing.T) {

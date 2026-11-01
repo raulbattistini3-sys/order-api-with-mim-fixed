@@ -22,9 +22,16 @@ import (
 // lockTimeout must outlast a forwarded request.
 const lockTimeout = 30 * time.Second
 
+// Limits caps request bodies, in bytes. Signature verification reads the body
+// before it knows who sent it, so only the import route gets the larger cap.
+type Limits struct {
+	Body   int64
+	Import int64
+}
+
 // New returns the gateway handler, forwarding accepted requests to upstream.
 // limiter throttles per client IP; pass a disabled limiter to turn it off.
-func New(verifier signing.Verifier, store idempotency.Store, sessions auth.Verifier, limiter *ratelimit.Limiter, trustProxy bool, upstream *url.URL, log *slog.Logger) http.Handler {
+func New(verifier signing.Verifier, limits Limits, store idempotency.Store, sessions auth.Verifier, limiter *ratelimit.Limiter, trustProxy bool, upstream *url.URL, log *slog.Logger) http.Handler {
 	// The default transport keeps only 2 idle connections per host, so under
 	// load the gateway opens and discards a socket per request and exhausts the
 	// ephemeral port range. Keep a generous pool so connections to the API are
@@ -52,9 +59,12 @@ func New(verifier signing.Verifier, store idempotency.Store, sessions auth.Verif
 			httpjson.Error(w, http.StatusBadGateway, "upstream unavailable")
 		},
 	}
+	verifier.MaxBody = limits.Body
 	signed := verifier.Middleware
+	uploadVerifier := verifier
+	uploadVerifier.MaxBody = limits.Import
 	session := auth.RequireSession(sessions)
-	idem := idempotency.Middleware(store, lockTimeout, log)
+	idem := idempotency.Middleware(store, lockTimeout, limits.Body, log)
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /orders", signed(idem(proxy)))
@@ -64,7 +74,7 @@ func New(verifier signing.Verifier, store idempotency.Store, sessions auth.Verif
 	mux.Handle("POST /me/orders", signed(session(idem(proxy))))
 	// Import carries a whole file and dedupes per row in the store, so it skips
 	// the per-request idempotency layer.
-	mux.Handle("POST /me/orders/import", signed(session(proxy)))
+	mux.Handle("POST /me/orders/import", uploadVerifier.Middleware(session(proxy)))
 	mux.Handle("/me", signed(session(proxy)))
 	mux.Handle("/me/", signed(session(proxy)))
 

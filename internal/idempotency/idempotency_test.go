@@ -70,7 +70,7 @@ func (m *memStore) Delete(_ context.Context, id string) error {
 func newServer(t *testing.T, store Store, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(Middleware(store, 30*time.Second, log)(handler))
+	srv := httptest.NewServer(Middleware(store, 30*time.Second, 1<<20, log)(handler))
 	t.Cleanup(srv.Close)
 	return srv
 }

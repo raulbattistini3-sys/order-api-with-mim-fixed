@@ -1,4 +1,4 @@
-// Command gateway protects the order API from duplicated, replayed and tampered
+// Command gateway is the protective server. It verifies and de-duplicates
 // requests. Clients talk to it instead of the API.
 //
 //	client ──▶ gateway :8081 ──▶ api :8080 ──▶ pocketbase
@@ -13,9 +13,9 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"strconv"
 	"time"
 
+	"github.com/you/orderguard/configs"
 	"github.com/you/orderguard/internal/gateway"
 	"github.com/you/orderguard/internal/pocketbase"
 	"github.com/you/orderguard/internal/ratelimit"
@@ -32,41 +32,31 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
-	secret := os.Getenv("CLIENT_SECRET")
-	if len(secret) < 16 {
+	cfg, err := configs.Load()
+	if err != nil {
+		return err
+	}
+	if len(cfg.ClientSecret) < 16 {
 		return errors.New("CLIENT_SECRET must be at least 16 characters")
 	}
-	maxAge, err := time.ParseDuration(server.Env("SIGNATURE_MAX_AGE", "30s"))
+	upstream, err := url.Parse(cfg.Gateway.Upstream)
 	if err != nil {
-		return fmt.Errorf("SIGNATURE_MAX_AGE: %w", err)
-	}
-	upstream, err := url.Parse(server.Env("UPSTREAM", "http://localhost:8080"))
-	if err != nil {
-		return fmt.Errorf("UPSTREAM: %w", err)
+		return fmt.Errorf("upstream: %w", err)
 	}
 
-	rate, err := strconv.ParseFloat(server.Env("GATEWAY_RATE", "100"), 64)
-	if err != nil {
-		return fmt.Errorf("GATEWAY_RATE: %w", err)
-	}
-	burst, err := strconv.Atoi(server.Env("GATEWAY_BURST", "200"))
-	if err != nil {
-		return fmt.Errorf("GATEWAY_BURST: %w", err)
-	}
+	pb := pocketbase.New(cfg.PocketBase.URL, cfg.PocketBase.Email, cfg.PocketBase.Password)
+	verifier := signing.Verifier{Secret: []byte(cfg.ClientSecret), MaxAge: cfg.Gateway.SignatureMaxAge, Skew: 5 * time.Second}
+	limits := gateway.Limits{Body: cfg.Limits.BodyBytes(), Import: cfg.Limits.ImportBytes()}
+
 	// Trust X-Forwarded-For only behind a proxy you control; otherwise a client
 	// could forge it to dodge the per-IP limit.
-	trustProxy := server.Env("TRUST_PROXY", "") == "1"
-
-	pb := pocketbase.New(server.Env("PB_URL", "http://localhost:8090"), os.Getenv("PB_EMAIL"), os.Getenv("PB_PASSWORD"))
-	verifier := signing.Verifier{Secret: []byte(secret), MaxAge: maxAge, Skew: 5 * time.Second}
-
-	limiter := ratelimit.New(rate, burst)
+	limiter := ratelimit.New(cfg.Gateway.Rate, cfg.Gateway.Burst)
 	stop := make(chan struct{})
 	defer close(stop)
 	limiter.StartGC(time.Minute, stop)
-	log.Info("rate limit", "per_ip_per_second", rate, "burst", burst, "trust_proxy", trustProxy)
+	log.Info("rate limit", "per_ip_per_second", cfg.Gateway.Rate, "burst", cfg.Gateway.Burst, "trust_proxy", cfg.Gateway.TrustProxy)
 
-	handler := gateway.New(verifier, pocketbase.NewIdempotencyStore(pb), pocketbase.NewAccounts(pb), limiter, trustProxy, upstream, log)
+	handler := gateway.New(verifier, limits, pocketbase.NewIdempotencyStore(pb), pocketbase.NewAccounts(pb), limiter, cfg.Gateway.TrustProxy, upstream, log)
 
-	return server.Run(":"+server.Env("PORT", "8081"), handler, log)
+	return server.Run(":"+cfg.Gateway.Port, handler, log)
 }

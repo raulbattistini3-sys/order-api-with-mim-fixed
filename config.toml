@@ -1,0 +1,25 @@
+# Settings for cmd/api and cmd/gateway. Environment variables override these.
+# Secrets stay in the environment: CLIENT_SECRET, PB_EMAIL and PB_PASSWORD.
+
+[api]
+port = "8080"
+import_workers = 16
+cnpj_api_url = "https://brasilapi.com.br"
+
+[gateway]
+port = "8081"
+upstream = "http://localhost:8080"
+rate = 100.0 # requests per second, per client IP
+burst = 200
+trust_proxy = false
+signature_max_age = "30s"
+
+[pocketbase]
+url = "http://localhost:8090"
+
+[limits]
+# Every route. The gateway reads the body before it can check the signature,
+# so anyone can make it buffer this much.
+max_body_mb = 1
+# POST /me/orders/import only. Set the same value in web/.env.local.
+max_import_mb = 96

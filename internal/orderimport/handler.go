@@ -12,18 +12,17 @@ import (
 	"github.com/you/orderguard/internal/httpjson"
 )
 
-// MaxBytes caps the upload size. A 300k-row product export fits comfortably.
-const MaxBytes = 64 << 20
-
 // Handler serves the spreadsheet import endpoint.
 type Handler struct {
 	importer *Importer
+	maxBytes int64
 	log      *slog.Logger
 }
 
-// NewHandler returns a Handler backed by importer.
-func NewHandler(importer *Importer, log *slog.Logger) *Handler {
-	return &Handler{importer: importer, log: log}
+// NewHandler returns a Handler backed by importer. maxBytes caps the upload
+// size.
+func NewHandler(importer *Importer, maxBytes int64, log *slog.Logger) *Handler {
+	return &Handler{importer: importer, maxBytes: maxBytes, log: log}
 }
 
 // Register adds the import route to mux. It expects the gateway's identity
@@ -33,8 +32,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) importOrders(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(io.LimitReader(http.MaxBytesReader(w, r.Body, MaxBytes+1), MaxBytes+1))
-	if err != nil || len(data) > MaxBytes {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBytes))
+	if err != nil {
 		httpjson.Error(w, http.StatusRequestEntityTooLarge, "file too large")
 		return
 	}

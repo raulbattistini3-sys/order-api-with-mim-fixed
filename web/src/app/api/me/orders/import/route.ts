@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { gatewayRaw } from "@/lib/gateway";
 import { getToken } from "@/lib/session";
 
-const MAX_BYTES = 64 << 20;
+const MAX_BYTES = Number(process.env.MAX_IMPORT_MB || 96) * 2 ** 20;
 
 // The file bytes are signed and forwarded as-is; the API parses CSV or XLSX by
 // sniffing the content, so the content type is only a hint.

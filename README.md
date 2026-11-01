@@ -36,7 +36,9 @@ Service logs go to `bin/logs/`.
 
 ### Configuration
 
-Gateway: `GATEWAY_RATE` (req/s per IP, default 100), `GATEWAY_BURST` (default 200), `TRUST_PROXY=1`, `SIGNATURE_MAX_AGE` (default 30s). API: `IMPORT_WORKERS` (default 16), `CNPJ_API_URL`. Both: `CLIENT_SECRET` must match.
+The API and gateway read `config.toml` (or the file named by `CONFIG_FILE`), and an unknown key stops them at startup. Values come from the built-in defaults, then the file, then the environment, so `MAX_IMPORT_MB=128` overrides `limits.max_import_mb`. Each setting's variable is its old name: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
+
+Secrets are read from the environment only: `CLIENT_SECRET`, `PB_EMAIL` and `PB_PASSWORD`. `limits.max_body_mb` applies to every route and `limits.max_import_mb` to `POST /me/orders/import`; set `MAX_IMPORT_MB` in `web/.env.local` too, since the Next.js app can't read `config.toml`.
 
 ### Frontend
 
@@ -126,7 +128,7 @@ browser ──httpOnly cookie──▶ Next.js server ──JWT + HMAC signature
 
 ## Spreadsheet import
 
-`POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, processed by a bounded pool of workers (`IMPORT_WORKERS`). It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows and 64 MB per file.
+`POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, processed by a bounded pool of workers (`IMPORT_WORKERS`). It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows per file, and 96 MiB by default (`limits.max_import_mb`).
 
 In the app, the orders page has an **Importar planilha** card with a downloadable template.
 
@@ -178,6 +180,7 @@ This follows the Go team's [server project layout](https://go.dev/doc/modules/la
 ```
 cmd/api               order API: wiring only
 cmd/gateway           protective gateway: wiring only
+configs               config.toml and environment loading
 internal/auth         accounts, sessions, HTTP handlers
 internal/company      Company, CNPJ validation, registry lookup
 internal/order        Order, Repository, HTTP handlers

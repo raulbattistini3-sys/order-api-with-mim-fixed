@@ -67,7 +67,8 @@ var keyPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{8,255}$`)
 // lockTimeout bounds how long a "pending" record is honoured. If the replica
 // holding it crashed, a retry after lockTimeout takes the key over. Even then a
 // second order can't be written: orders has its own unique index on the key.
-func Middleware(store Store, lockTimeout time.Duration, log *slog.Logger) func(http.Handler) http.Handler {
+// maxBody caps how much of a request body is read for the fingerprint.
+func Middleware(store Store, lockTimeout time.Duration, maxBody int64, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get(Header)
@@ -75,7 +76,7 @@ func Middleware(store Store, lockTimeout time.Duration, log *slog.Logger) func(h
 				httpjson.Error(w, http.StatusBadRequest, "Idempotency-Key header required (8-255 chars of [A-Za-z0-9_.:-])")
 				return
 			}
-			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 			if err != nil {
 				httpjson.Error(w, http.StatusRequestEntityTooLarge, "body too large")
 				return

@@ -36,7 +36,9 @@ Os logs dos serviços ficam em `bin/logs/`.
 
 ### Configuração
 
-Gateway: `GATEWAY_RATE` (req/s por IP, padrão 100), `GATEWAY_BURST` (padrão 200), `TRUST_PROXY=1`, `SIGNATURE_MAX_AGE` (padrão 30s). API: `IMPORT_WORKERS` (padrão 16), `CNPJ_API_URL`. Ambos: `CLIENT_SECRET` precisa ser igual.
+A API e o gateway leem o `config.toml` (ou o arquivo indicado em `CONFIG_FILE`), e uma chave desconhecida impede a inicialização. Os valores vêm dos padrões internos, depois do arquivo e depois do ambiente, então `MAX_IMPORT_MB=128` sobrescreve `limits.max_import_mb`. A variável de cada ajuste mantém o nome antigo: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
+
+Os segredos são lidos só do ambiente: `CLIENT_SECRET`, `PB_EMAIL` e `PB_PASSWORD`. `limits.max_body_mb` vale para todas as rotas e `limits.max_import_mb` para `POST /me/orders/import`; defina `MAX_IMPORT_MB` também em `web/.env.local`, porque o app Next.js não lê o `config.toml`.
 
 ### Frontend
 
@@ -126,7 +128,7 @@ navegador ──cookie httpOnly──▶ servidor Next.js ──JWT + assinatura
 
 ## Importação de planilhas
 
-`POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, processado por um pool limitado de workers (`IMPORT_WORKERS`). Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas e 64 MB por arquivo.
+`POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, processado por um pool limitado de workers (`IMPORT_WORKERS`). Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas por arquivo e 96 MiB por padrão (`limits.max_import_mb`).
 
 No app, a página de pedidos tem um cartão **Importar planilha** com um modelo para baixar.
 
@@ -178,6 +180,7 @@ Segue o [layout de projetos de servidor](https://go.dev/doc/modules/layout#serve
 ```
 cmd/api               API de pedidos: só a ligação das dependências
 cmd/gateway           gateway de proteção: só a ligação das dependências
+configs               leitura do config.toml e do ambiente
 internal/auth         contas, sessões, handlers HTTP
 internal/company      Company, validação de CNPJ, consulta ao registro
 internal/order        Order, Repository, handlers HTTP
