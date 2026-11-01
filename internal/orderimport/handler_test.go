@@ -13,7 +13,7 @@ import (
 
 func TestImportRejectsFileOverLimit(t *testing.T) {
 	mux := http.NewServeMux()
-	NewHandler(nil, 8, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	NewHandler(nil, nil, 1, 8, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/me/orders/import", strings.NewReader("123456789"))
 	req.Header.Set(auth.UserHeader, "u1")

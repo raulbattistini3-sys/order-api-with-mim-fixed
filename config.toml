@@ -4,6 +4,8 @@
 [api]
 port = "8080"
 import_workers = 16
+import_sync_rows = 15000 # larger files go to the background queue
+import_spool_dir = "bin/imports" # queued files wait here until they finish
 cnpj_api_url = "https://brasilapi.com.br"
 
 [gateway]

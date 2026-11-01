@@ -28,9 +28,11 @@ type Config struct {
 
 // API configures cmd/api.
 type API struct {
-	Port          string `toml:"port"`
-	ImportWorkers int    `toml:"import_workers"`
-	CNPJAPIURL    string `toml:"cnpj_api_url"`
+	Port           string `toml:"port"`
+	ImportWorkers  int    `toml:"import_workers"`
+	ImportSyncRows int    `toml:"import_sync_rows"` // larger files go to the queue
+	ImportSpoolDir string `toml:"import_spool_dir"` // queued files wait here
+	CNPJAPIURL     string `toml:"cnpj_api_url"`
 }
 
 // Gateway configures cmd/gateway.
@@ -64,7 +66,7 @@ func (l Limits) ImportBytes() int64 { return l.MaxImportMB << 20 }
 
 func defaults() Config {
 	return Config{
-		API:        API{Port: "8080", ImportWorkers: 16, CNPJAPIURL: "https://brasilapi.com.br"},
+		API:        API{Port: "8080", ImportWorkers: 16, ImportSyncRows: 15_000, ImportSpoolDir: "bin/imports", CNPJAPIURL: "https://brasilapi.com.br"},
 		Gateway:    Gateway{Port: "8081", Upstream: "http://localhost:8080", Rate: 100, Burst: 200, SignatureMaxAge: 30 * time.Second},
 		PocketBase: PocketBase{URL: "http://localhost:8090"},
 		Limits:     Limits{MaxBodyMB: 1, MaxImportMB: 96},
@@ -107,6 +109,8 @@ func applyEnv(cfg *Config) error {
 	override(&errs, "PORT", &cfg.API.Port, text)
 	override(&errs, "PORT", &cfg.Gateway.Port, text)
 	override(&errs, "IMPORT_WORKERS", &cfg.API.ImportWorkers, strconv.Atoi)
+	override(&errs, "IMPORT_SYNC_ROWS", &cfg.API.ImportSyncRows, strconv.Atoi)
+	override(&errs, "IMPORT_SPOOL_DIR", &cfg.API.ImportSpoolDir, text)
 	override(&errs, "CNPJ_API_URL", &cfg.API.CNPJAPIURL, text)
 	override(&errs, "UPSTREAM", &cfg.Gateway.Upstream, text)
 	override(&errs, "GATEWAY_RATE", &cfg.Gateway.Rate, func(s string) (float64, error) { return strconv.ParseFloat(s, 64) })

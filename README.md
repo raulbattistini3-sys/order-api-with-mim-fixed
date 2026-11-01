@@ -130,6 +130,8 @@ browser ──httpOnly cookie──▶ Next.js server ──JWT + HMAC signature
 
 `POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, processed by a bounded pool of workers (`IMPORT_WORKERS`). It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows per file, and 96 MiB by default (`limits.max_import_mb`).
 
+Files of up to `api.import_sync_rows` rows (default 15,000) finish while you wait. Larger ones answer `202` with a job at once, and `GET /me/orders/import/{id}` reports its progress. Jobs run one at a time, oldest first. They are stored in PocketBase and the file in `api.import_spool_dir`, so a restart resumes the unfinished job from its first row, and the per-row keys stop it writing any order twice. The queue expects a single API replica.
+
 In the app, the orders page has an **Importar planilha** card with a downloadable template.
 
 ## Load test

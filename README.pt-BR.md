@@ -130,6 +130,8 @@ navegador ──cookie httpOnly──▶ servidor Next.js ──JWT + assinatura
 
 `POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, processado por um pool limitado de workers (`IMPORT_WORKERS`). Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas por arquivo e 96 MiB por padrão (`limits.max_import_mb`).
 
+Arquivos de até `api.import_sync_rows` linhas (padrão 15.000) terminam enquanto você espera. Os maiores respondem `202` com um job na hora, e `GET /me/orders/import/{id}` informa o progresso. Os jobs rodam um por vez, do mais antigo para o mais novo. Eles ficam no PocketBase e o arquivo em `api.import_spool_dir`, então um reinício retoma o job inacabado desde a primeira linha, e as chaves por linha impedem que um pedido seja gravado duas vezes. A fila pressupõe uma única réplica da API.
+
 No app, a página de pedidos tem um cartão **Importar planilha** com um modelo para baixar.
 
 ## Teste de carga

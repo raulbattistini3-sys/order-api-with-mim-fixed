@@ -3,11 +3,12 @@
 //
 //	POST /orders          GET /orders?customer=X
 //	POST /auth/...        GET /auth/cnpj/{cnpj}
-//	GET  /me              /me/orders, /me/todos
+//	GET  /me              /me/orders, /me/orders/import, /me/todos
 //	GET  /healthz
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,15 +34,32 @@ func main() {
 	directory := company.NewBrasilAPI(cfg.API.CNPJAPIURL)
 
 	orders := pocketbase.NewOrderRepository(pb)
+	importer := orderimport.NewImporter(orders, cfg.API.ImportWorkers)
+	queue, err := orderimport.NewQueue(pocketbase.NewImportJobs(pb), importer, cfg.API.ImportSpoolDir, log)
+	if err != nil {
+		log.Error("import queue", "err", err)
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
 	order.NewHandler(orders, log).Register(mux)
-	orderimport.NewHandler(orderimport.NewImporter(orders, cfg.API.ImportWorkers), cfg.Limits.ImportBytes(), log).Register(mux)
+	orderimport.NewHandler(importer, queue, cfg.API.ImportSyncRows, cfg.Limits.ImportBytes(), log).Register(mux)
 	todo.NewHandler(pocketbase.NewTodoRepository(pb), log).Register(mux)
 	auth.NewHandler(pocketbase.NewAccounts(pb), pocketbase.NewCompanyRepository(pb), directory, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
-	if err := server.Run(":"+cfg.API.Port, mux, log); err != nil {
+	// Stopping mid-job is safe: the unfinished job resumes on the next start.
+	ctx, stop := context.WithCancel(context.Background())
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		queue.Run(ctx)
+	}()
+
+	err = server.Run(":"+cfg.API.Port, mux, log)
+	stop()
+	<-drained
+	if err != nil {
 		log.Error("api stopped", "err", err)
 		os.Exit(1)
 	}
