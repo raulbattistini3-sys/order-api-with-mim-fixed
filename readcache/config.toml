@@ -1,0 +1,13 @@
+# Settings for the read cache. config.toml.example documents each one.
+# Credentials stay in the environment: PB_EMAIL and PB_PASSWORD.
+
+[server]
+port = 8082
+
+[cache]
+min_rows = 500
+max_rows = 200000
+
+[upstream]
+api = "http://localhost:8080"
+pocketbase = "http://localhost:8090"
