@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -21,24 +22,26 @@ type Summary struct {
 	Skipped    []RowError `json:"skipped"`    // rows that didn't parse
 }
 
-// Importer writes parsed rows as orders, with a bounded number of workers.
+// Importer writes parsed rows as orders, in batches, with a bounded number of
+// workers.
 type Importer struct {
-	repo    Writer
-	workers int
+	repo      Writer
+	workers   int
+	batchSize int
 }
 
 // Writer is the part of the order store an import needs.
 type Writer interface {
 	Create(ctx context.Context, o order.Order) (order.Order, error)
+	// CreateBatch writes all of orders or none of them.
+	CreateBatch(ctx context.Context, orders []order.Order) error
 }
 
-// NewImporter returns an Importer. workers caps how many rows are written at
-// once; the gateway's rate limit guards the front door, this guards the store.
-func NewImporter(repo Writer, workers int) *Importer {
-	if workers < 1 {
-		workers = 1
-	}
-	return &Importer{repo: repo, workers: workers}
+// NewImporter returns an Importer. workers caps how many batches of batchSize
+// rows are written at once; the gateway's rate limit guards the front door, this
+// guards the store.
+func NewImporter(repo Writer, workers, batchSize int) *Importer {
+	return &Importer{repo: repo, workers: max(workers, 1), batchSize: max(batchSize, 1)}
 }
 
 const (
@@ -63,15 +66,18 @@ func (im *Importer) stream(ctx context.Context, userID, companyID, batchID strin
 	var mu sync.Mutex
 	sampled := append([]RowError(nil), skipped...)
 
-	write := func(row Row) {
-		o := order.Order{
+	toOrder := func(row Row) order.Order {
+		return order.Order{
 			Customer:       userID,
 			Company:        companyID,
 			Item:           row.Item,
 			Quantity:       row.Quantity,
 			IdempotencyKey: rowKey(batchID, row.Line),
 		}
-		switch _, err := im.repo.Create(ctx, o); {
+	}
+
+	writeOne := func(row Row) {
+		switch _, err := im.repo.Create(ctx, toOrder(row)); {
 		case errors.Is(err, order.ErrDuplicate):
 			duplicates.Add(1)
 		case err != nil:
@@ -84,7 +90,24 @@ func (im *Importer) stream(ctx context.Context, userID, companyID, batchID strin
 		default:
 			created.Add(1)
 		}
-		if n := finished.Add(1); report != nil && n%reportEvery == 0 {
+	}
+
+	// One duplicate rolls a whole batch back, and a re-import is all duplicates,
+	// so a failed batch goes row by row to sort out what each row was.
+	writeBatch := func(batch []Row) {
+		orders := make([]order.Order, len(batch))
+		for i, row := range batch {
+			orders[i] = toOrder(row)
+		}
+		if err := im.repo.CreateBatch(ctx, orders); err == nil {
+			created.Add(int64(len(batch)))
+		} else {
+			for _, row := range batch {
+				writeOne(row)
+			}
+		}
+		size := int64(len(batch))
+		if n := finished.Add(size); report != nil && n/reportEvery > (n-size)/reportEvery {
 			select {
 			case report <- Summary{Total: int(n), Created: int(created.Load()), Duplicates: int(duplicates.Load()), Failed: int(failed.Load())}:
 			default:
@@ -93,21 +116,21 @@ func (im *Importer) stream(ctx context.Context, userID, companyID, batchID strin
 	}
 
 	// Rows are interchangeable, so a fixed pool of workers shares one buffered
-	// channel. The buffer keeps workers busy while the feed below catches up.
-	jobs := make(chan Row, im.workers*2)
+	// channel of batches. The buffer keeps workers busy while the feed catches up.
+	jobs := make(chan []Row, im.workers*2)
 	var wg sync.WaitGroup
 	for range im.workers {
 		wg.Go(func() {
-			for row := range jobs {
-				write(row)
+			for batch := range jobs {
+				writeBatch(batch)
 			}
 		})
 	}
 
 feed:
-	for _, row := range rows {
+	for batch := range slices.Chunk(rows, im.batchSize) {
 		select {
-		case jobs <- row:
+		case jobs <- batch:
 		case <-ctx.Done():
 			break feed
 		}

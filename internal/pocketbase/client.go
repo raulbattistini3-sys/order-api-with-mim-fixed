@@ -118,6 +118,21 @@ type Page[T any] struct {
 	TotalItems int `json:"totalItems"`
 }
 
+// BatchCreate inserts records in one transaction, so either all are written or
+// none are. The batch API must be enabled in PocketBase's settings.
+func BatchCreate[T any](ctx context.Context, c *Client, collection string, records []T) error {
+	type request struct {
+		Method string `json:"method"`
+		URL    string `json:"url"`
+		Body   T      `json:"body"`
+	}
+	requests := make([]request, len(records))
+	for i, record := range records {
+		requests[i] = request{Method: http.MethodPost, URL: recordsPath(collection), Body: record}
+	}
+	return c.do(ctx, http.MethodPost, "/api/batch", map[string]any{"requests": requests}, nil)
+}
+
 // Scroll is List without the total, which PocketBase would have to count on
 // every page.
 func Scroll[T any](ctx context.Context, c *Client, collection, filter, sort string, perPage int) ([]T, error) {

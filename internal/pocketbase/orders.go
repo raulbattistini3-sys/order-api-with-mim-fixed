@@ -34,6 +34,11 @@ func (r *OrderRepository) Create(ctx context.Context, o order.Order) (order.Orde
 	return out, err
 }
 
+// CreateBatch inserts orders in one transaction: one bad order fails them all.
+func (r *OrderRepository) CreateBatch(ctx context.Context, orders []order.Order) error {
+	return BatchCreate(ctx, r.pb, ordersCollection, orders)
+}
+
 // ListByCustomer returns up to limit newest orders and the total count.
 func (r *OrderRepository) ListByCustomer(ctx context.Context, customer string, limit int) ([]order.Order, int, error) {
 	page, err := List[order.Order](ctx, r.pb, ordersCollection, "customer="+Quote(customer), "-created", limit)

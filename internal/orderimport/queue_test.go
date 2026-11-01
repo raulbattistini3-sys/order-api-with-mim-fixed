@@ -89,7 +89,7 @@ func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 func newQueue(t *testing.T, store JobStore, repo *fakeRepo) (*Queue, string) {
 	t.Helper()
 	dir := t.TempDir()
-	q, err := NewQueue(store, NewImporter(repo, 4), dir, discardLog())
+	q, err := NewQueue(store, NewImporter(repo, 4, 50), dir, discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -64,6 +64,7 @@ func TestRejectsBadConfig(t *testing.T) {
 		"unknown key":  "[limits]\nmax_imprt_mb = 8\n",
 		"wrong type":   "[limits]\nmax_body_mb = \"big\"\n",
 		"zero limit":   "[limits]\nmax_body_mb = 0\n",
+		"huge batch":   "[api]\nimport_batch_size = 1001\n",
 		"invalid toml": "[limits\n",
 	} {
 		t.Run(name, func(t *testing.T) {

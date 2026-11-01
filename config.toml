@@ -3,7 +3,8 @@
 
 [api]
 port = "8080"
-import_workers = 16
+import_workers = 1 # PocketBase takes one writer at a time; more only contend
+import_batch_size = 500 # orders per PocketBase batch, 1000 at most
 import_sync_rows = 15000 # larger files go to the background queue
 import_spool_dir = "bin/imports" # queued files wait here until they finish
 cnpj_api_url = "https://brasilapi.com.br"

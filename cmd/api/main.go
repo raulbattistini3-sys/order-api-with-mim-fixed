@@ -34,7 +34,7 @@ func main() {
 	directory := company.NewBrasilAPI(cfg.API.CNPJAPIURL)
 
 	orders := pocketbase.NewOrderRepository(pb)
-	importer := orderimport.NewImporter(orders, cfg.API.ImportWorkers)
+	importer := orderimport.NewImporter(orders, cfg.API.ImportWorkers, cfg.API.ImportBatchSize)
 	queue, err := orderimport.NewQueue(pocketbase.NewImportJobs(pb), importer, cfg.API.ImportSpoolDir, log)
 	if err != nil {
 		log.Error("import queue", "err", err)

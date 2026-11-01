@@ -20,6 +20,8 @@ type fakeRepo struct {
 	mu   sync.Mutex
 	keys map[string]bool
 	fail bool
+
+	batches int
 }
 
 func (r *fakeRepo) Create(_ context.Context, o order.Order) (order.Order, error) {
@@ -33,6 +35,24 @@ func (r *fakeRepo) Create(_ context.Context, o order.Order) (order.Order, error)
 	}
 	r.keys[o.IdempotencyKey] = true
 	return o, nil
+}
+
+func (r *fakeRepo) CreateBatch(_ context.Context, orders []order.Order) error {
+	if r.fail {
+		return fmt.Errorf("db down")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.batches++
+	for _, o := range orders {
+		if r.keys[o.IdempotencyKey] {
+			return order.ErrDuplicate // a transaction: nothing was written
+		}
+	}
+	for _, o := range orders {
+		r.keys[o.IdempotencyKey] = true
+	}
+	return nil
 }
 
 func (r *fakeRepo) ListByCustomer(context.Context, string, int) ([]order.Order, int, error) {
@@ -108,7 +128,7 @@ func TestParseXLSX(t *testing.T) {
 
 func TestImportIsIdempotentPerFile(t *testing.T) {
 	repo := &fakeRepo{keys: map[string]bool{}}
-	im := NewImporter(repo, 8)
+	im := NewImporter(repo, 8, 2)
 	rows, bad, _ := Parse([]byte("item,quantity\nA,1\nB,2\nC,3\n"))
 	ctx := context.Background()
 
@@ -131,9 +151,39 @@ func TestImportIsIdempotentPerFile(t *testing.T) {
 	}
 }
 
+func TestImportWritesInBatches(t *testing.T) {
+	repo := &fakeRepo{keys: map[string]bool{}}
+	rows, _, _ := Parse([]byte("item,quantity\nA,1\nB,2\nC,3\nD,4\nE,5\n"))
+	s, err := NewImporter(repo, 1, 2).Import(context.Background(), "u", "c", "b", rows, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Created != 5 || repo.batches != 3 {
+		t.Fatalf("summary = %+v, batches = %d", s, repo.batches)
+	}
+}
+
+// One duplicate rolls the batch back, so the rest of it still has to land.
+func TestImportFallsBackWhenABatchHasADuplicate(t *testing.T) {
+	repo := &fakeRepo{keys: map[string]bool{}}
+	im := NewImporter(repo, 1, 10)
+	rows, _, _ := Parse([]byte("item,quantity\nA,1\nB,2\nC,3\n"))
+	ctx := context.Background()
+	if _, err := im.Import(ctx, "u", "c", "b", rows[1:2], nil); err != nil {
+		t.Fatal(err)
+	}
+	s, err := im.Import(ctx, "u", "c", "b", rows, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Created != 2 || s.Duplicates != 1 || s.Failed != 0 || len(repo.keys) != 3 {
+		t.Fatalf("summary = %+v, orders = %d", s, len(repo.keys))
+	}
+}
+
 func TestImportReportsFailures(t *testing.T) {
 	repo := &fakeRepo{keys: map[string]bool{}, fail: true}
-	im := NewImporter(repo, 4)
+	im := NewImporter(repo, 4, 2)
 	rows, bad, _ := Parse([]byte("item,quantity\nA,1\nB,2\n"))
 	s, _ := im.Import(context.Background(), "u", "c", "b", rows, bad)
 	if s.Failed != 2 || s.Created != 0 {
@@ -141,13 +191,13 @@ func TestImportReportsFailures(t *testing.T) {
 	}
 }
 
-// gaugeRepo records the most writes it saw at once.
+// gaugeRepo records the most batches it saw at once.
 type gaugeRepo struct {
 	fakeRepo
 	current, peak atomic.Int64
 }
 
-func (r *gaugeRepo) Create(ctx context.Context, o order.Order) (order.Order, error) {
+func (r *gaugeRepo) CreateBatch(ctx context.Context, orders []order.Order) error {
 	n := r.current.Add(1)
 	defer r.current.Add(-1)
 	for {
@@ -157,7 +207,7 @@ func (r *gaugeRepo) Create(ctx context.Context, o order.Order) (order.Order, err
 		}
 	}
 	time.Sleep(time.Millisecond)
-	return r.fakeRepo.Create(ctx, o)
+	return r.fakeRepo.CreateBatch(ctx, orders)
 }
 
 func TestImportWritesEveryRowWithinWorkerCap(t *testing.T) {
@@ -166,7 +216,7 @@ func TestImportWritesEveryRowWithinWorkerCap(t *testing.T) {
 	for i := range rows {
 		rows[i] = Row{Item: "A", Quantity: 1, Line: i + 2}
 	}
-	s, err := NewImporter(repo, 4).Import(context.Background(), "u", "c", "b", rows, nil)
+	s, err := NewImporter(repo, 4, 2).Import(context.Background(), "u", "c", "b", rows, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,10 +235,10 @@ type cancellingRepo struct {
 	calls  atomic.Int64
 }
 
-func (r *cancellingRepo) Create(ctx context.Context, o order.Order) (order.Order, error) {
-	r.calls.Add(1)
+func (r *cancellingRepo) CreateBatch(ctx context.Context, orders []order.Order) error {
+	r.calls.Add(int64(len(orders)))
 	r.cancel()
-	return r.fakeRepo.Create(ctx, o)
+	return r.fakeRepo.CreateBatch(ctx, orders)
 }
 
 func TestImportStopsWhenCancelled(t *testing.T) {
@@ -199,7 +249,7 @@ func TestImportStopsWhenCancelled(t *testing.T) {
 	for i := range rows {
 		rows[i] = Row{Item: "A", Quantity: 1, Line: i + 2}
 	}
-	_, err := NewImporter(repo, 2).Import(ctx, "u", "c", "b", rows, nil)
+	_, err := NewImporter(repo, 2, 50).Import(ctx, "u", "c", "b", rows, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}

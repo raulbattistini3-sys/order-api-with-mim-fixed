@@ -16,6 +16,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// maxImportBatch matches settings.batch.maxRequests in the migrations. A larger
+// batch would be refused and every row would fall back to its own request.
+const maxImportBatch = 1000
+
 // Config is every setting of the API and the gateway.
 type Config struct {
 	API        API        `toml:"api"`
@@ -28,11 +32,12 @@ type Config struct {
 
 // API configures cmd/api.
 type API struct {
-	Port           string `toml:"port"`
-	ImportWorkers  int    `toml:"import_workers"`
-	ImportSyncRows int    `toml:"import_sync_rows"` // larger files go to the queue
-	ImportSpoolDir string `toml:"import_spool_dir"` // queued files wait here
-	CNPJAPIURL     string `toml:"cnpj_api_url"`
+	Port            string `toml:"port"`
+	ImportWorkers   int    `toml:"import_workers"`
+	ImportBatchSize int    `toml:"import_batch_size"` // at most maxImportBatch
+	ImportSyncRows  int    `toml:"import_sync_rows"`  // larger files go to the queue
+	ImportSpoolDir  string `toml:"import_spool_dir"`  // queued files wait here
+	CNPJAPIURL      string `toml:"cnpj_api_url"`
 }
 
 // Gateway configures cmd/gateway.
@@ -66,7 +71,7 @@ func (l Limits) ImportBytes() int64 { return l.MaxImportMB << 20 }
 
 func defaults() Config {
 	return Config{
-		API:        API{Port: "8080", ImportWorkers: 16, ImportSyncRows: 15_000, ImportSpoolDir: "bin/imports", CNPJAPIURL: "https://brasilapi.com.br"},
+		API:        API{Port: "8080", ImportWorkers: 1, ImportBatchSize: 500, ImportSyncRows: 15_000, ImportSpoolDir: "bin/imports", CNPJAPIURL: "https://brasilapi.com.br"},
 		Gateway:    Gateway{Port: "8081", Upstream: "http://localhost:8080", Rate: 100, Burst: 200, SignatureMaxAge: 30 * time.Second},
 		PocketBase: PocketBase{URL: "http://localhost:8090"},
 		Limits:     Limits{MaxBodyMB: 1, MaxImportMB: 96},
@@ -98,6 +103,9 @@ func Load() (Config, error) {
 	if cfg.Limits.MaxBodyMB <= 0 || cfg.Limits.MaxImportMB <= 0 {
 		return Config{}, errors.New("limits must be a positive number of MiB")
 	}
+	if cfg.API.ImportBatchSize < 1 || cfg.API.ImportBatchSize > maxImportBatch {
+		return Config{}, fmt.Errorf("import_batch_size must be from 1 to %d", maxImportBatch)
+	}
 	return cfg, nil
 }
 
@@ -109,6 +117,7 @@ func applyEnv(cfg *Config) error {
 	override(&errs, "PORT", &cfg.API.Port, text)
 	override(&errs, "PORT", &cfg.Gateway.Port, text)
 	override(&errs, "IMPORT_WORKERS", &cfg.API.ImportWorkers, strconv.Atoi)
+	override(&errs, "IMPORT_BATCH_SIZE", &cfg.API.ImportBatchSize, strconv.Atoi)
 	override(&errs, "IMPORT_SYNC_ROWS", &cfg.API.ImportSyncRows, strconv.Atoi)
 	override(&errs, "IMPORT_SPOOL_DIR", &cfg.API.ImportSpoolDir, text)
 	override(&errs, "CNPJ_API_URL", &cfg.API.CNPJAPIURL, text)
