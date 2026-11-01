@@ -52,7 +52,7 @@ func (r *memRepo) Totals(_ context.Context, customer string) (Totals, error) {
 
 func newMux(repo Repository) *http.ServeMux {
 	mux := http.NewServeMux()
-	NewHandler(repo, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	Routes(mux, NewService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return mux
 }
 

@@ -10,10 +10,10 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 
 	"github.com/you/orderguard/configs"
+	"github.com/you/orderguard/internal/api"
 	"github.com/you/orderguard/internal/auth"
 	"github.com/you/orderguard/internal/company"
 	"github.com/you/orderguard/internal/order"
@@ -25,28 +25,33 @@ import (
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	cfg, err := configs.Load()
-	if err != nil {
-		log.Error("config", "err", err)
+	if err := run(log); err != nil {
+		log.Error("api stopped", "err", err)
 		os.Exit(1)
 	}
-	pb := pocketbase.New(cfg.PocketBase.URL, cfg.PocketBase.Email, cfg.PocketBase.Password)
-	directory := company.NewBrasilAPI(cfg.API.CNPJAPIURL)
+}
 
+func run(log *slog.Logger) error {
+	cfg, err := configs.Load()
+	if err != nil {
+		return err
+	}
+	pb := pocketbase.New(cfg.PocketBase.URL, cfg.PocketBase.Email, cfg.PocketBase.Password)
 	orders := pocketbase.NewOrderRepository(pb)
 	importer := orderimport.NewImporter(orders, cfg.API.ImportWorkers, cfg.API.ImportBatchSize)
 	queue, err := orderimport.NewQueue(pocketbase.NewImportJobs(pb), importer, cfg.API.ImportSpoolDir, log)
 	if err != nil {
-		log.Error("import queue", "err", err)
-		os.Exit(1)
+		return err
 	}
 
-	mux := http.NewServeMux()
-	order.NewHandler(orders, log).Register(mux)
-	orderimport.NewHandler(importer, queue, cfg.API.ImportSyncRows, cfg.Limits.ImportBytes(), log).Register(mux)
-	todo.NewHandler(pocketbase.NewTodoRepository(pb), log).Register(mux)
-	auth.NewHandler(pocketbase.NewAccounts(pb), pocketbase.NewCompanyRepository(pb), directory, log).Register(mux)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	handler := api.New(api.Deps{
+		Accounts:       auth.NewService(pocketbase.NewAccounts(pb), pocketbase.NewCompanyRepository(pb), company.NewBrasilAPI(cfg.API.CNPJAPIURL), log),
+		Orders:         order.NewService(orders),
+		Imports:        orderimport.NewService(importer, queue, cfg.API.ImportSyncRows),
+		Todos:          todo.NewService(pocketbase.NewTodoRepository(pb)),
+		MaxImportBytes: cfg.Limits.ImportBytes(),
+		Log:            log,
+	})
 
 	// Stopping mid-job is safe: the unfinished job resumes on the next start.
 	ctx, stop := context.WithCancel(context.Background())
@@ -56,11 +61,8 @@ func main() {
 		queue.Run(ctx)
 	}()
 
-	err = server.Run(":"+cfg.API.Port, mux, log)
+	err = server.Run(":"+cfg.API.Port, handler, log)
 	stop()
 	<-drained
-	if err != nil {
-		log.Error("api stopped", "err", err)
-		os.Exit(1)
-	}
+	return err
 }

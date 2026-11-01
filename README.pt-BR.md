@@ -30,13 +30,14 @@ Esse único comando sobe tudo, executa os ataques, mostra os resultados e encerr
 | `node scripts/run.mjs` | Executa a demo completa uma vez |
 | `node scripts/run.mjs --serve` | Mantém os serviços no ar até o Ctrl+C |
 | `go test ./...` | Executa os testes em Go |
+| `go test -tags e2e ./internal/e2e/` | Executa o gateway e a API contra um PocketBase real. Precisa de `bin/pocketbase`, baixado pelo `scripts/run.mjs` |
 | `npm test` (em `attacker/` ou `web/`) | Executa os testes em JS |
 
 Os logs dos serviços ficam em `bin/logs/`.
 
 ### Configuração
 
-A API e o gateway leem o `config.toml` (ou o arquivo indicado em `CONFIG_FILE`), e uma chave desconhecida impede a inicialização. Os valores vêm dos padrões internos, depois do arquivo e depois do ambiente, então `MAX_IMPORT_MB=128` sobrescreve `limits.max_import_mb`. A variável de cada ajuste mantém o nome antigo: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
+A API e o gateway leem o `config.toml` (ou o arquivo indicado em `CONFIG_FILE`); o `config.toml.example` documenta cada ajuste, e uma chave desconhecida impede a inicialização. Os valores vêm dos padrões internos, depois do arquivo e depois do ambiente, então `MAX_IMPORT_MB=128` sobrescreve `limits.max_import_mb`. A variável de cada ajuste mantém o nome antigo: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
 
 Os segredos são lidos só do ambiente: `CLIENT_SECRET`, `PB_EMAIL` e `PB_PASSWORD`. `limits.max_body_mb` vale para todas as rotas e `limits.max_import_mb` para `POST /me/orders/import`; defina `MAX_IMPORT_MB` também em `web/.env.local`, porque o app Next.js não lê o `config.toml`.
 
@@ -128,7 +129,7 @@ navegador ──cookie httpOnly──▶ servidor Next.js ──JWT + assinatura
 
 ## Importação de planilhas
 
-`POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, processado por um pool limitado de workers (`IMPORT_WORKERS`). Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas por arquivo e 96 MiB por padrão (`limits.max_import_mb`).
+`POST /me/orders/import` recebe um `.csv` ou `.xlsx` e cria um pedido por linha, gravado em lotes do PocketBase (`api.import_batch_size`) por um pool de workers que compartilham um canal (`api.import_workers`). O PocketBase aceita um escritor por vez, então um worker é o ajuste mais rápido, e um lote que falha, como numa reimportação, repete suas linhas uma a uma. Ele lê dois formatos: as colunas simples `item, quantity` e o export `produtos` do ERP (`name` + `quantidade_em_estoque`, separado por ponto e vírgula, decimais em pt-BR, colunas extras ignoradas). Cada linha recebe uma chave de idempotência determinística, então reenviar a mesma planilha grava cada pedido uma vez — a garantia que o gateway dá a uma requisição, aplicada a um arquivo inteiro. Linhas que não são lidas são reportadas, não descartadas. Até 500 mil linhas por arquivo e 96 MiB por padrão (`limits.max_import_mb`).
 
 Arquivos de até `api.import_sync_rows` linhas (padrão 15.000) terminam enquanto você espera. Os maiores respondem `202` com um job na hora, e `GET /me/orders/import/{id}` informa o progresso. Os jobs rodam um por vez, do mais antigo para o mais novo. Eles ficam no PocketBase e o arquivo em `api.import_spool_dir`, então um reinício retoma o job inacabado desde a primeira linha, e as chaves por linha impedem que um pedido seja gravado duas vezes. A fila pressupõe uma única réplica da API.
 
@@ -178,15 +179,17 @@ Toda rota exceto `/healthz` exige `X-Timestamp` e `X-Signature`, e as rotas `/me
 
 ## Estrutura do projeto
 
-Segue o [layout de projetos de servidor](https://go.dev/doc/modules/layout#server-project) do time do Go e usa apenas a biblioteca padrão. As dependências são passadas por construtores e ligadas em cada `main`. Os pacotes de domínio definem as interfaces de que precisam, e só `internal/pocketbase` conhece o banco.
+Segue o [layout de projeto de servidor](https://go.dev/doc/modules/layout#server-project) da equipe do Go. Cada pacote de domínio define uma interface `Service` para sua lógica, as interfaces que precisa dos seus repositórios e `Routes`, cujos handlers são funções que capturam o serviço. Tudo é passado como dependência e montado em `internal/api` e em cada `main`, então um teste pode trocar qualquer camada, e só `internal/pocketbase` conhece o banco.
 
 ```
 cmd/api               API de pedidos: só a ligação das dependências
 cmd/gateway           gateway de proteção: só a ligação das dependências
+internal/api          monta as rotas da API a partir dos serviços
+internal/e2e          a stack inteira contra um PocketBase real
 configs               leitura do config.toml e do ambiente
 internal/auth         contas, sessões, handlers HTTP
 internal/company      Company, validação de CNPJ, consulta ao registro
-internal/order        Order, Repository, handlers HTTP
+internal/order        Order, Service, Repository, handlers HTTP
 internal/todo         tarefas por usuário
 internal/gateway      limite de taxa → assinatura → idempotência → proxy
 internal/signing      verificação HMAC e middleware

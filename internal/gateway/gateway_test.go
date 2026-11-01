@@ -42,7 +42,15 @@ func setup(t *testing.T, upstream http.HandlerFunc) *httptest.Server {
 	u, _ := url.Parse(api.URL)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	limiter := ratelimit.New(0, 0) // disabled; the limiter has its own tests
-	h := New(signing.Verifier{Secret: secret, MaxAge: time.Minute}, Limits{Body: 1 << 10, Import: 1 << 11}, noStore{}, sessions{}, limiter, false, u, log)
+	h := New(Deps{
+		Verifier:    signing.Verifier{Secret: secret, MaxAge: time.Minute},
+		Limits:      Limits{Body: 1 << 10, Import: 1 << 11},
+		Idempotency: noStore{},
+		Sessions:    sessions{},
+		Limiter:     limiter,
+		Upstream:    u,
+		Log:         log,
+	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv

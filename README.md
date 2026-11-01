@@ -30,13 +30,14 @@ That one command starts everything, runs the attacks, prints the results and sto
 | `node scripts/run.mjs` | Runs the full demo once |
 | `node scripts/run.mjs --serve` | Keeps the services up until Ctrl+C |
 | `go test ./...` | Runs the Go tests |
+| `go test -tags e2e ./internal/e2e/` | Runs the gateway and API against a real PocketBase. Needs `bin/pocketbase`, which `scripts/run.mjs` fetches |
 | `npm test` (in `attacker/` or `web/`) | Runs the JS tests |
 
 Service logs go to `bin/logs/`.
 
 ### Configuration
 
-The API and gateway read `config.toml` (or the file named by `CONFIG_FILE`), and an unknown key stops them at startup. Values come from the built-in defaults, then the file, then the environment, so `MAX_IMPORT_MB=128` overrides `limits.max_import_mb`. Each setting's variable is its old name: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
+The API and gateway read `config.toml` (or the file named by `CONFIG_FILE`); `config.toml.example` documents every setting, and an unknown key stops them at startup. Values come from the built-in defaults, then the file, then the environment, so `MAX_IMPORT_MB=128` overrides `limits.max_import_mb`. Each setting's variable is its old name: `PORT`, `UPSTREAM`, `PB_URL`, `GATEWAY_RATE`, `GATEWAY_BURST`, `TRUST_PROXY`, `SIGNATURE_MAX_AGE`, `IMPORT_WORKERS`, `CNPJ_API_URL`, `MAX_BODY_MB`, `MAX_IMPORT_MB`.
 
 Secrets are read from the environment only: `CLIENT_SECRET`, `PB_EMAIL` and `PB_PASSWORD`. `limits.max_body_mb` applies to every route and `limits.max_import_mb` to `POST /me/orders/import`; set `MAX_IMPORT_MB` in `web/.env.local` too, since the Next.js app can't read `config.toml`.
 
@@ -128,7 +129,7 @@ browser ──httpOnly cookie──▶ Next.js server ──JWT + HMAC signature
 
 ## Spreadsheet import
 
-`POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, processed by a bounded pool of workers (`IMPORT_WORKERS`). It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows per file, and 96 MiB by default (`limits.max_import_mb`).
+`POST /me/orders/import` takes a `.csv` or `.xlsx` and creates one order per row, written in PocketBase batches (`api.import_batch_size`) by a pool of workers sharing a channel (`api.import_workers`). PocketBase takes one writer at a time, so one worker is the fastest setting, and a batch that fails, such as on a re-import, retries its rows one by one. It reads two layouts: the simple `item, quantity` columns, and the ERP `produtos` export (`name` + `quantidade_em_estoque`, semicolon-delimited, pt-BR decimals, extra columns ignored). Each row gets a deterministic idempotency key, so re-importing the same file writes each order once — the guarantee the gateway gives one request, applied to a whole file. Rows that don't parse are reported, not dropped. Up to 500k rows per file, and 96 MiB by default (`limits.max_import_mb`).
 
 Files of up to `api.import_sync_rows` rows (default 15,000) finish while you wait. Larger ones answer `202` with a job at once, and `GET /me/orders/import/{id}` reports its progress. Jobs run one at a time, oldest first. They are stored in PocketBase and the file in `api.import_spool_dir`, so a restart resumes the unfinished job from its first row, and the per-row keys stop it writing any order twice. The queue expects a single API replica.
 
@@ -178,15 +179,17 @@ Every route except `/healthz` needs `X-Timestamp` and `X-Signature`, and `/me` r
 
 ## Project layout
 
-This follows the Go team's [server project layout](https://go.dev/doc/modules/layout#server-project) and uses only the standard library. Dependencies are passed through constructors and wired in each `main`. Domain packages define the interfaces they need, and only `internal/pocketbase` knows about the database.
+This follows the Go team's [server project layout](https://go.dev/doc/modules/layout#server-project). Each domain package defines a `Service` interface for its logic, the interfaces it needs from its stores, and `Routes`, whose handlers are functions closing over the service. Everything is passed in as a dependency and assembled in `internal/api` and each `main`, so a test can swap any layer, and only `internal/pocketbase` knows about the database.
 
 ```
 cmd/api               order API: wiring only
 cmd/gateway           protective gateway: wiring only
+internal/api          assembles the API's routes from its services
+internal/e2e          the whole stack against a real PocketBase
 configs               config.toml and environment loading
 internal/auth         accounts, sessions, HTTP handlers
 internal/company      Company, CNPJ validation, registry lookup
-internal/order        Order, Repository, HTTP handlers
+internal/order        Order, Service, Repository, HTTP handlers
 internal/todo         per-user to-dos
 internal/gateway      rate limit → signature → idempotency → proxy
 internal/signing      HMAC verification and middleware

@@ -29,9 +29,20 @@ type Limits struct {
 	Import int64
 }
 
-// New returns the gateway handler, forwarding accepted requests to upstream.
-// limiter throttles per client IP; pass a disabled limiter to turn it off.
-func New(verifier signing.Verifier, limits Limits, store idempotency.Store, sessions auth.Verifier, limiter *ratelimit.Limiter, trustProxy bool, upstream *url.URL, log *slog.Logger) http.Handler {
+// Deps is everything the gateway needs from outside.
+type Deps struct {
+	Verifier    signing.Verifier
+	Limits      Limits
+	Idempotency idempotency.Store
+	Sessions    auth.Verifier
+	Limiter     *ratelimit.Limiter // per client IP; a disabled one turns it off
+	TrustProxy  bool
+	Upstream    *url.URL
+	Log         *slog.Logger
+}
+
+// New returns the gateway handler, forwarding accepted requests to d.Upstream.
+func New(d Deps) http.Handler {
 	// The default transport keeps only 2 idle connections per host, so under
 	// load the gateway opens and discards a socket per request and exhausts the
 	// ephemeral port range. Keep a generous pool so connections to the API are
@@ -43,7 +54,7 @@ func New(verifier signing.Verifier, limits Limits, store idempotency.Store, sess
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(upstream)
+			r.SetURL(d.Upstream)
 			// Set here, after verification, so a client can't supply its own.
 			r.Out.Header.Set(order.RefHeader, r.In.Header.Get(signing.HeaderKey))
 			r.Out.Header.Del(auth.UserHeader)
@@ -55,16 +66,17 @@ func New(verifier signing.Verifier, limits Limits, store idempotency.Store, sess
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			log.Error("upstream", "err", err)
+			d.Log.Error("upstream", "err", err)
 			httpjson.Error(w, http.StatusBadGateway, "upstream unavailable")
 		},
 	}
-	verifier.MaxBody = limits.Body
+	verifier := d.Verifier
+	verifier.MaxBody = d.Limits.Body
 	signed := verifier.Middleware
-	uploadVerifier := verifier
-	uploadVerifier.MaxBody = limits.Import
-	session := auth.RequireSession(sessions)
-	idem := idempotency.Middleware(store, lockTimeout, limits.Body, log)
+	uploadVerifier := d.Verifier
+	uploadVerifier.MaxBody = d.Limits.Import
+	session := auth.RequireSession(d.Sessions)
+	idem := idempotency.Middleware(d.Idempotency, lockTimeout, d.Limits.Body, d.Log)
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /orders", signed(idem(proxy)))
@@ -78,7 +90,7 @@ func New(verifier signing.Verifier, limits Limits, store idempotency.Store, sess
 	mux.Handle("/me", signed(session(proxy)))
 	mux.Handle("/me/", signed(session(proxy)))
 
-	limited := limiter.Middleware(ratelimit.IPKey(trustProxy))(mux)
+	limited := d.Limiter.Middleware(ratelimit.IPKey(d.TrustProxy))(mux)
 	// Health checks bypass the limit, so probes can't be throttled.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {

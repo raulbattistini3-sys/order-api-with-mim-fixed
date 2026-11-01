@@ -205,7 +205,7 @@ func TestHandlerSendsLargeFilesToTheQueue(t *testing.T) {
 	store, repo := &memJobs{}, &fakeRepo{keys: map[string]bool{}}
 	q, _ := newQueue(t, store, repo)
 	mux := http.NewServeMux()
-	NewHandler(q.importer, q, 2, 1<<20, discardLog()).Register(mux)
+	Routes(mux, NewService(q.importer, q, 2), 1<<20, discardLog())
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, importRequest(http.MethodPost, "/me/orders/import", "u", "item,quantity\nA,1\nB,2\n"))

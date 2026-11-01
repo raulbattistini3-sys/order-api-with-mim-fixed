@@ -56,7 +56,16 @@ func run(log *slog.Logger) error {
 	limiter.StartGC(time.Minute, stop)
 	log.Info("rate limit", "per_ip_per_second", cfg.Gateway.Rate, "burst", cfg.Gateway.Burst, "trust_proxy", cfg.Gateway.TrustProxy)
 
-	handler := gateway.New(verifier, limits, pocketbase.NewIdempotencyStore(pb), pocketbase.NewAccounts(pb), limiter, cfg.Gateway.TrustProxy, upstream, log)
+	handler := gateway.New(gateway.Deps{
+		Verifier:    verifier,
+		Limits:      limits,
+		Idempotency: pocketbase.NewIdempotencyStore(pb),
+		Sessions:    pocketbase.NewAccounts(pb),
+		Limiter:     limiter,
+		TrustProxy:  cfg.Gateway.TrustProxy,
+		Upstream:    upstream,
+		Log:         log,
+	})
 
 	return server.Run(":"+cfg.Gateway.Port, handler, log)
 }
